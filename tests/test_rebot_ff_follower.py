@@ -277,6 +277,17 @@ def test_one_lost_feedback_reply_does_not_end_the_session(follower) -> None:
         send(rest)
 
 
+def test_target_clipping_warnings_are_rate_limited(follower, caplog: pytest.LogCaptureFixture) -> None:
+    """A fast move clips the target every cycle; LeRobot's warning for each must not flood the log."""
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    with caplog.at_level("WARNING", logger="lerobot.robots.utils"):
+        for _ in range(100):  # half a second with the leader 60 degrees ahead of the arm
+            send({**rest, "shoulder_pan": 60.0})
+    clipped = [r for r in caplog.records if "Relative goal position magnitude" in r.getMessage()]
+    assert 1 <= len(clipped) <= 2
+
+
 def test_gravity_compensation_refuses_the_robstride_build() -> None:
     from lelab.rebot_ff_follower import RebotB601FeedforwardFollowerConfig as Config
 

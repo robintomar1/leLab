@@ -37,6 +37,7 @@ config's module, and `lelab.rollout_entry` imports it so the rollout subprocess
 can build the same follower from `--robot.type`.
 """
 
+import logging
 import math
 import time
 from dataclasses import dataclass, field
@@ -67,6 +68,33 @@ MOTOR_FAULTS = {
 
 
 _FEEDBACK_ATTEMPTS = 3
+
+
+class _OncePerSecond(logging.Filter):
+    """Lets one matching record through per second.
+
+    LeRobot warns, with a formatted table, every time `max_relative_target` clips a
+    target. With the bound doing its job as a speed limit that is every control
+    cycle of a fast move: a hundred multi-line warnings a second, written from the
+    control thread.
+    """
+
+    def __init__(self, needle: str) -> None:
+        super().__init__()
+        self._needle = needle
+        self._last = float("-inf")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self._needle not in str(record.msg):
+            return True
+        now = time.monotonic()
+        if now - self._last < 1.0:
+            return False
+        self._last = now
+        return True
+
+
+logging.getLogger("lerobot.robots.utils").addFilter(_OncePerSecond("Relative goal position magnitude"))
 
 
 class MotorFaultError(RuntimeError):
