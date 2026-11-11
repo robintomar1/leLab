@@ -88,7 +88,7 @@ _REBOT_MIT_OPTIONS: dict[str, Any] = {
 }
 
 # LeLab's own follower for the B601, registered by lelab/rebot_ff_follower.py.
-_REBOT_FEEDFORWARD_FOLLOWER = "lelab_rebot_b601_ff_follower"
+_REBOT_FOLLOWER = "lelab_rebot_b601_ff_follower"
 
 
 def _rebot(
@@ -96,13 +96,13 @@ def _rebot(
     label: str,
     follower_options: dict[str, Any],
     position_kp: dict[str, float] | None,
-    follower_type: str = "rebot_b601_follower",
 ) -> RobotModel:
     return RobotModel(
         key=key,
         label=f"reBot B601 + Arm 102 leader: {label}",
         family="rebot_b601",
-        follower_type=follower_type,
+        # LeLab's follower in every mode: it is the one that notices a motor shutting itself down.
+        follower_type=_REBOT_FOLLOWER,
         leader_type="rebot_102_leader",
         follower_name="rebot_b601_follower",
         leader_name="rebot_102_leader",
@@ -163,7 +163,6 @@ ROBOT_MODELS: dict[str, RobotModel] = {
         "MIT mode",
         {**_REBOT_MIT_OPTIONS, "velocity_feedforward": 0.0},
         None,
-        follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
     ),
     # The same, also sending the target's velocity: the lag goes without either
     # gain going up, which is what teleoperation wants. It is the tight-tracking
@@ -175,7 +174,6 @@ ROBOT_MODELS: dict[str, RobotModel] = {
         "MIT mode with velocity feed-forward",
         {**_REBOT_MIT_OPTIONS, "velocity_feedforward": 1.0},
         None,
-        follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
     ),
 }
 
@@ -226,10 +224,7 @@ def make_follower_config(model: RobotModel, port: str, device_id: str, cameras: 
 
         return SO101FollowerConfig(port=port, id=device_id, cameras=cameras, **model.follower_options)
     if model.family == "rebot_b601":
-        if model.follower_type == _REBOT_FEEDFORWARD_FOLLOWER:
-            from .rebot_ff_follower import RebotB601FeedforwardFollowerConfig as FollowerConfig
-        else:
-            from lerobot.robots.rebot_b601_follower import RebotB601FollowerRobotConfig as FollowerConfig
+        from .rebot_ff_follower import RebotB601FeedforwardFollowerConfig as FollowerConfig
 
         return FollowerConfig(port=port, id=device_id, cameras=cameras, **model.follower_options)
     raise ValueError(f"Unknown robot model {model.key!r}")

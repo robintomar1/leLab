@@ -29,7 +29,7 @@ from .robot_models import (
     make_leader,
 )
 from .utils.config import setup_calibration_files
-from .utils.devices import follower_lock, safe_disconnect_device
+from .utils.devices import MotorFaultError, follower_lock, safe_disconnect_device
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,8 @@ def get_joint_positions_from_robot(robot, robot_model: str = DEFAULT_ROBOT_MODEL
 
         return joint_positions
 
+    except MotorFaultError:
+        raise  # not a display hiccup: the arm is limp and the session has to end
     except Exception as e:
         logger.error(f"Error getting joint positions: {e}")
         return dict.fromkeys((motor_to_urdf_mapping or {}).values(), 0.0)
@@ -260,6 +262,8 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
                             if websocket_manager and websocket_manager.active_connections:
                                 websocket_manager.broadcast_joint_data_sync(joint_data)
                             last_broadcast_time = current_time
+                        except MotorFaultError:
+                            raise
                         except Exception as e:
                             logger.error(f"Error broadcasting joint data: {e}")
 

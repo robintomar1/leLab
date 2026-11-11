@@ -98,7 +98,7 @@ def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
         get_robot_model(k) for k in (REBOT_DEFAULT, REBOT_HIGH_POS_GAINS, REBOT_MIT, REBOT_MIT_FF)
     )
     # Same controller and follower; only the velocity feed-forward differs.
-    assert mit_ff.follower_type == mit.follower_type
+    assert {m.follower_type for m in (default, high, mit, mit_ff)} == {"lelab_rebot_b601_ff_follower"}
     assert {k for k in mit.follower_options if mit.follower_options[k] != mit_ff.follower_options[k]} == {
         "velocity_feedforward"
     }
@@ -542,7 +542,7 @@ def test_record_config_uses_the_requested_models_devices(monkeypatch: pytest.Mon
             single_task="pick",
         )
     )
-    assert cfg.robot.type == "rebot_b601_follower"
+    assert cfg.robot.type == "lelab_rebot_b601_ff_follower"
     assert cfg.teleop.type == "rebot_102_leader"
     assert cfg.robot.control_mode.value == "pos_vel"
 
@@ -606,7 +606,7 @@ def test_rebot_rollout_argv_parses(tmp_path, monkeypatch: pytest.MonkeyPatch, ga
         lerobot_rollout.main()
 
     (cfg,) = parsed
-    assert cfg.robot.type == "rebot_b601_follower"
+    assert cfg.robot.type == "lelab_rebot_b601_ff_follower"
     assert cfg.robot.port == "/dev/ttyACM0"
     assert cfg.robot.id == "follower1"
     assert cfg.robot.control_mode.value == "pos_vel"

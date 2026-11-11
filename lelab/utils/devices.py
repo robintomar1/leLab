@@ -17,6 +17,10 @@ from typing import Any
 follower_lock = threading.Lock()
 
 
+class MotorFaultError(RuntimeError):
+    """A motor reported that it shut itself down. The arm is limp: the session cannot go on."""
+
+
 def safe_disconnect_device(device: Any, logger: logging.Logger, context: str = "cleanup") -> None:
     """Disconnect a LeRobot device and force-release resources on failure."""
     if device is None:

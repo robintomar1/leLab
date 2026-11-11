@@ -244,7 +244,7 @@ def test_gravity_model_matches_the_urdf_reference_values() -> None:
 
 
 def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(follower) -> None:
-    from lelab.rebot_ff_follower import MotorFaultError
+    from lelab.utils.devices import MotorFaultError
 
     robot, send = follower
     rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
@@ -261,6 +261,27 @@ def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(followe
 
     robot.motors["elbow_flex"].get_state = healthy
     send(rest)
+
+
+def test_a_fault_is_noticed_in_position_velocity_mode_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The position-velocity models never read the arm to send a command, only to
+    observe it: the fault has to surface there, and through the teleoperation display."""
+    from lelab.robot_models import REBOT_HIGH_POS_GAINS
+    from lelab.teleoperate import get_joint_positions_from_robot
+    from lelab.utils.devices import MotorFaultError
+
+    robot = make_follower(get_robot_model(REBOT_HIGH_POS_GAINS), "/dev/ttyACM0", "arm")
+    assert type(robot) is RebotB601FeedforwardFollower
+    bus = _Bus()
+    robot.bus = bus
+    robot.motors = {name: _Motor(bus, name) for name in robot.motor_names}
+    assert set(get_joint_positions_from_robot(robot, REBOT_HIGH_POS_GAINS)) == set(robot.motor_names)
+
+    robot.motors["shoulder_lift"].get_state = lambda: SimpleNamespace(
+        pos=0.0, vel=0.0, torq=0.0, status_code=0x9, t_mos=30.0, t_rotor=30.0
+    )
+    with pytest.raises(MotorFaultError, match="shoulder_lift reports under-voltage"):
+        get_joint_positions_from_robot(robot, REBOT_HIGH_POS_GAINS)
 
 
 def test_one_lost_feedback_reply_does_not_end_the_session(follower) -> None:

@@ -51,6 +51,7 @@ from lerobot.robots.utils import ensure_safe_goal_position
 from lerobot.utils.decorators import check_if_not_connected
 
 from .rebot_gravity import JOINTS as GRAVITY_JOINTS, gravity_torques
+from .utils.devices import MotorFaultError
 
 FOLLOWER_TYPE = "lelab_rebot_b601_ff_follower"
 
@@ -95,10 +96,6 @@ class _OncePerSecond(logging.Filter):
 
 
 logging.getLogger("lerobot.robots.utils").addFilter(_OncePerSecond("Relative goal position magnitude"))
-
-
-class MotorFaultError(RuntimeError):
-    """A motor shut itself down."""
 
 
 # Targets further apart in time than this are separate motions, not one to differentiate.
@@ -215,8 +212,7 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
         states = None
         self._gravity_torque = {}
         if self.config.max_relative_target is not None or self.config.gravity_compensation:
-            states = self._read_arm()
-            self._raise_on_fault(states)
+            states = self._read_feedback()
             present_pos = self._present_pos(states)
             if self.config.gravity_compensation:
                 self._gravity_torque = self._gravity_feedforward(now, present_pos)
@@ -234,16 +230,22 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
                 sent_pos[motor_name] = self._send_joint(motor_name, position_deg, state)
         return {f"{motor}.pos": val for motor, val in sent_pos.items()}
 
-    def _read_arm(self) -> dict:
-        """The motors' states. One reply lost on a busy bus is retried, not fatal:
-        an error here ends the session, and ending it drops the arm."""
+    def _read_feedback(self) -> dict:
+        """The motors' states, for every caller: observations as well as commands.
+
+        One reply lost on a busy bus is retried, not fatal: an error here ends the
+        session, and ending it drops the arm. A motor that reports it has shut
+        itself down does end it, in any control mode, with the reason.
+        """
         for attempt in range(_FEEDBACK_ATTEMPTS):
             try:
-                return self._read_feedback()
+                states = super()._read_feedback()
+                break
             except RuntimeError:
                 if attempt == _FEEDBACK_ATTEMPTS - 1:
                     raise
-        raise AssertionError("unreachable")
+        self._raise_on_fault(states)
+        return states
 
     def _raise_on_fault(self, states: dict) -> None:
         faults = {
