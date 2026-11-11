@@ -197,3 +197,34 @@ def test_start_teleoperation_disconnects_follower_when_leader_fails(
     # The already-connected follower must have been cleaned up.
     assert created["follower"].disconnected is True
     assert teleop.teleoperation_active is False
+
+
+def test_loop_timer_reports_rate_and_stage_times_per_window() -> None:
+    from lelab.teleoperate import LoopTimer
+
+    now = [0.0]
+    timer = LoopTimer(window_s=1.0, clock=lambda: now[0])
+
+    # 100 cycles of 10 ms: 4 ms reading the leader, 1 ms commanding the follower.
+    stats = None
+    for _ in range(100):
+        now[0] += 0.010
+        assert stats is None  # nothing is reported before the window closes
+        stats = timer.record(read_s=0.004, send_s=0.001)
+
+    assert stats == {"hz": 100.0, "leader_read_ms": 4.0, "follower_send_ms": 1.0, "max_period_ms": 10.0}
+
+    # The next window starts clean, and one slow cycle shows up as its longest period.
+    now[0] += 0.250
+    assert timer.record(read_s=0.004, send_s=0.001) is None
+    for _ in range(75):
+        now[0] += 0.010
+        stats = timer.record(read_s=0.002, send_s=0.001)
+    assert stats["max_period_ms"] == 250.0
+    assert stats["hz"] == 76.0
+
+
+def test_teleoperation_status_has_no_loop_stats_when_idle() -> None:
+    import lelab.teleoperate as teleop
+
+    assert teleop.handle_teleoperation_status()["loop"] is None

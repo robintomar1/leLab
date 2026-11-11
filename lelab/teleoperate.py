@@ -40,6 +40,52 @@ current_robot = None
 current_teleop = None
 # Model of the arms in the active session; decides how joints map to the URDF.
 current_robot_model: str = DEFAULT_ROBOT_MODEL
+# Timing of the last window of control cycles, for /teleoperation-status.
+loop_stats: dict[str, float] | None = None
+
+_LOOP_STATS_WINDOW_S = 2.0
+
+
+class LoopTimer:
+    """Averages the control loop's timing over fixed windows.
+
+    The loop has no target rate: it runs as fast as the leader can be read and
+    the follower commanded, so the rate it achieves is worth reporting.
+    """
+
+    def __init__(self, window_s: float = _LOOP_STATS_WINDOW_S, clock=time.perf_counter) -> None:
+        self._window_s = window_s
+        self._clock = clock
+        self._window_start = clock()
+        self._cycles = 0
+        self._read_s = 0.0
+        self._send_s = 0.0
+        self._max_period_s = 0.0
+        self._last_cycle_end: float | None = None
+
+    def record(self, read_s: float, send_s: float) -> dict[str, float] | None:
+        """Count one cycle; returns the window's stats when a window closes."""
+        now = self._clock()
+        if self._last_cycle_end is not None:
+            self._max_period_s = max(self._max_period_s, now - self._last_cycle_end)
+        self._last_cycle_end = now
+        self._cycles += 1
+        self._read_s += read_s
+        self._send_s += send_s
+
+        elapsed = now - self._window_start
+        if elapsed < self._window_s:
+            return None
+        stats = {
+            "hz": round(self._cycles / elapsed, 1),
+            "leader_read_ms": round(1e3 * self._read_s / self._cycles, 2),
+            "follower_send_ms": round(1e3 * self._send_s / self._cycles, 2),
+            "max_period_ms": round(1e3 * self._max_period_s, 2),
+        }
+        self._window_start = now
+        self._cycles = 0
+        self._read_s = self._send_s = self._max_period_s = 0.0
+        return stats
 
 
 class TeleoperateRequest(BaseModel):
@@ -177,16 +223,26 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
         # Stream the arms in the background; the worker owns disconnect so stop()
         # does not race the serial bus from the request thread.
         def teleoperation_worker():
-            global teleoperation_active, current_robot, current_teleop
+            global teleoperation_active, current_robot, current_teleop, loop_stats
 
             logger.info("Starting teleoperation loop...")
             try:
                 last_broadcast_time = 0
                 broadcast_interval = 1 / 30  # 30 FPS
+                timer = LoopTimer()
+                last_stats_log = 0.0
 
                 while teleoperation_active:
+                    cycle_start = time.perf_counter()
                     action = teleop_device.get_action()
+                    read_done = time.perf_counter()
                     robot.send_action(action)
+                    stats = timer.record(read_done - cycle_start, time.perf_counter() - read_done)
+                    if stats is not None:
+                        loop_stats = stats
+                        if read_done - last_stats_log >= 10.0:
+                            last_stats_log = read_done
+                            logger.info(f"[teleop-loop] {stats}")
 
                     current_time = time.time()
                     if current_time - last_broadcast_time >= broadcast_interval:
@@ -213,6 +269,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
                 teleoperation_active = False
                 current_robot = None
                 current_teleop = None
+                loop_stats = None
 
         teleoperation_thread = threading.Thread(
             target=teleoperation_worker, name="teleoperation-worker", daemon=True
@@ -270,6 +327,8 @@ def handle_teleoperation_status() -> dict[str, Any]:
     return {
         "teleoperation_active": teleoperation_active,
         "robot_model": current_robot_model,
+        # Achieved control-loop timing over the last window; None until one has elapsed.
+        "loop": loop_stats if teleoperation_active else None,
         "available_controls": {
             "stop_teleoperation": teleoperation_active,
         },
