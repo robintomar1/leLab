@@ -112,7 +112,7 @@ def test_built_follower_is_the_same_arm_to_lerobot(follower) -> None:
     assert robot.name == "rebot_b601_follower"  # same calibration directory and dataset robot_type
     assert robot.config.type == FOLLOWER_TYPE
     assert robot.config.control_mode.value == "mit"
-    assert robot.config.max_relative_target == 20.0
+    assert robot.config.max_relative_target["elbow_flex"] == 20.0
 
 
 def test_mit_commands_carry_the_targets_velocity(follower) -> None:
@@ -171,7 +171,7 @@ def test_plain_mit_model_is_lerobots_own_follower_with_a_bounded_target() -> Non
     robot = make_follower(get_robot_model(REBOT_MIT), "/dev/ttyACM0", "arm")
     assert type(robot) is RebotB601Follower
     assert robot.config.control_mode.value == "mit"
-    assert robot.config.max_relative_target == 20.0
+    assert robot.config.max_relative_target["shoulder_pan"] == 20.0
 
 
 def test_zero_feedforward_gain_is_lerobots_driver(follower) -> None:
@@ -249,5 +249,6 @@ def test_rollout_runs_through_lelabs_entry_point_and_builds_the_same_follower(
     (cfg,) = parsed
     assert type(cfg.robot) is RebotB601FeedforwardFollowerConfig
     assert cfg.robot.control_mode.value == "mit"
-    assert cfg.robot.max_relative_target == 20.0
+    assert cfg.robot.max_relative_target["wrist_flex"] == 20.0
+    assert cfg.robot.max_relative_target["gripper"] == 270.0
     assert cfg.robot.velocity_feedforward == 1.0

@@ -24,6 +24,7 @@ LeRobot is imported inside the functions: this module is imported by
 optional `rebot` extra.
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -70,6 +71,21 @@ class RobotModel:
     # connected; None leaves the motors alone. See rebot_tuning.py.
     position_kp: dict[str, float] | None = None
 
+
+# How far, in degrees, a MIT-mode target may lead the arm. The gripper is driven in
+# force-position mode with its own speed limit, so its bound is its whole travel.
+_REBOT_MIT_OPTIONS: dict[str, Any] = {
+    "control_mode": "mit",
+    "max_relative_target": {
+        "shoulder_pan": 20.0,
+        "shoulder_lift": 20.0,
+        "elbow_flex": 20.0,
+        "wrist_flex": 20.0,
+        "wrist_yaw": 20.0,
+        "wrist_roll": 20.0,
+        "gripper": 270.0,
+    },
+}
 
 # LeLab's own follower for the B601, registered by lelab/rebot_ff_follower.py.
 _REBOT_FEEDFORWARD_FOLLOWER = "lelab_rebot_b601_ff_follower"
@@ -140,7 +156,7 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     # well-damped controller turns a policy's action errors into small state
     # errors, and tighter tracking fits the data better but performs worse in
     # closed loop (Bronars, Park, Agrawal, "Tune to Learn", arXiv:2604.02523).
-    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", {"control_mode": "mit", "max_relative_target": 20.0}, None),
+    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", _REBOT_MIT_OPTIONS, None),
     # The same, with LeLab's follower also sending the target's velocity
     # (lelab/rebot_ff_follower.py): the lag goes without either gain going up, which
     # is what teleoperation wants. It is the tight-tracking regime that paper warns
@@ -149,7 +165,7 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     REBOT_MIT_FF: _rebot(
         REBOT_MIT_FF,
         "MIT mode with velocity feed-forward",
-        {"control_mode": "mit", "max_relative_target": 20.0},
+        _REBOT_MIT_OPTIONS,
         None,
         follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
     ),
@@ -182,7 +198,10 @@ def prepare_follower(model: RobotModel, port: str) -> None:
 
 def follower_cli_args(model: RobotModel) -> list[str]:
     """`--robot.*` flags, besides type/port/id/cameras, that LeRobot's CLIs need for this follower."""
-    return [f"--robot.{name}={value}" for name, value in model.follower_options.items()]
+    return [
+        f"--robot.{name}={json.dumps(value) if isinstance(value, dict) else value}"
+        for name, value in model.follower_options.items()
+    ]
 
 
 def _missing_extra(model: RobotModel, error: ImportError) -> ImportError:
