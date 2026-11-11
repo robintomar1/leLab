@@ -263,6 +263,20 @@ def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(followe
     send(rest)
 
 
+def test_one_lost_feedback_reply_does_not_end_the_session(follower) -> None:
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    real = robot.motors["wrist_yaw"].get_state
+    replies = iter([None, None])  # two reads in a row come back without this motor
+
+    robot.motors["wrist_yaw"].get_state = lambda: next(replies, real())
+    assert set(send(rest)) == {*ARM_JOINTS, "gripper"}  # the third read succeeded; every joint was commanded
+
+    robot.motors["wrist_yaw"].get_state = lambda: None  # a motor that is really gone still stops it
+    with pytest.raises(RuntimeError, match="No motor feedback available for: wrist_yaw"):
+        send(rest)
+
+
 def test_gravity_compensation_refuses_the_robstride_build() -> None:
     from lelab.rebot_ff_follower import RebotB601FeedforwardFollowerConfig as Config
 

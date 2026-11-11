@@ -66,6 +66,9 @@ MOTOR_FAULTS = {
 }
 
 
+_FEEDBACK_ATTEMPTS = 3
+
+
 class MotorFaultError(RuntimeError):
     """A motor shut itself down."""
 
@@ -184,7 +187,7 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
         states = None
         self._gravity_torque = {}
         if self.config.max_relative_target is not None or self.config.gravity_compensation:
-            states = self._read_feedback()
+            states = self._read_arm()
             self._raise_on_fault(states)
             present_pos = self._present_pos(states)
             if self.config.gravity_compensation:
@@ -202,6 +205,17 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
                 state = states.get(motor_name) if states is not None else None
                 sent_pos[motor_name] = self._send_joint(motor_name, position_deg, state)
         return {f"{motor}.pos": val for motor, val in sent_pos.items()}
+
+    def _read_arm(self) -> dict:
+        """The motors' states. One reply lost on a busy bus is retried, not fatal:
+        an error here ends the session, and ending it drops the arm."""
+        for attempt in range(_FEEDBACK_ATTEMPTS):
+            try:
+                return self._read_feedback()
+            except RuntimeError:
+                if attempt == _FEEDBACK_ATTEMPTS - 1:
+                    raise
+        raise AssertionError("unreachable")
 
     def _raise_on_fault(self, states: dict) -> None:
         faults = {
