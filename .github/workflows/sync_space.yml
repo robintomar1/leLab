@@ -23,7 +23,6 @@ jobs:
           cd frontend
           # HF's pre-receive hook rejects raw binaries, so the meshes go back to LFS.
           echo 'public/so-101-urdf/meshes/*.stl filter=lfs diff=lfs merge=lfs -text' >> .gitattributes
-          echo 'public/rebot-b601-urdf/meshes/**/*.stl filter=lfs diff=lfs merge=lfs -text' >> .gitattributes
           git init -b main
           git config user.email "ci@huggingface.co"
           git config user.name "GitHub CI"
