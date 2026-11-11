@@ -20,6 +20,7 @@ import math
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,10 +97,23 @@ def test_rebot_follower_runs_in_position_velocity_mode() -> None:
     assert follower_cli_args(get_robot_model(SO101)) == []
 
 
+@pytest.fixture(autouse=True)
+def gains_log(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    """No test here opens a real motor bus: record the ports the gains would be applied on."""
+    import lelab.rebot_tuning as tuning
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        tuning, "apply_position_gains", lambda port, baud=921600, gains=None: calls.append(port)
+    )
+    return calls
+
+
 class _Recorder:
     def __init__(self, log: list[str], name: str, fail: bool = False) -> None:
         self._log, self._name, self._fail = log, name, fail
         self.cameras: dict = {}
+        self.config = SimpleNamespace(port="/dev/ttyACM0")
 
     def connect(self, calibrate: bool = True) -> None:
         self._log.append(f"{self._name}.connect(calibrate={calibrate})")
@@ -115,6 +129,117 @@ def test_connect_arms_connects_a_rebot_leader_before_powering_the_follower() -> 
     log: list[str] = []
     connect_arms(get_robot_model(REBOT_B601), _Recorder(log, "follower"), _Recorder(log, "leader"))
     assert log == ["leader.connect(calibrate=False)", "follower.connect(calibrate=False)"]
+
+
+def test_connect_arms_sets_the_rebot_gains_before_the_follower_connects(gains_log: list) -> None:
+    log: list[str] = []
+
+    class _Follower(_Recorder):
+        def connect(self, calibrate: bool = True) -> None:
+            # By now the gains are in the motors, written on a bus that is closed again.
+            assert gains_log == ["/dev/ttyACM0"]
+            super().connect(calibrate)
+
+    connect_arms(
+        get_robot_model(REBOT_B601),
+        _Follower(log, "follower"),
+        _Recorder(log, "leader"),
+        follower_port="/dev/ttyACM0",
+    )
+    assert log == ["leader.connect(calibrate=False)", "follower.connect(calibrate=False)"]
+
+
+def test_connect_arms_reports_the_follower_when_its_gains_cannot_be_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lelab.rebot_tuning as tuning
+
+    def fail(port, baud=921600, gains=None):
+        raise RuntimeError("shoulder_pan: no acknowledgement")
+
+    monkeypatch.setattr(tuning, "apply_position_gains", fail)
+    log: list[str] = []
+    with pytest.raises(RuntimeError, match="follower arm on /dev/ttyACM0"):
+        connect_arms(get_robot_model(REBOT_B601), _Recorder(log, "follower"), follower_port="/dev/ttyACM0")
+    assert log == []  # the follower was never powered
+
+
+def test_so101_followers_are_not_prepared(gains_log: list) -> None:
+    from lelab.robot_models import prepare_follower
+
+    prepare_follower(get_robot_model(SO101), "/dev/ttyACM0")
+    assert gains_log == []
+
+
+class _FakeMotor:
+    def __init__(self, bus, joint_id: int) -> None:
+        self.bus, self.joint_id, self.kp, self.closed = bus, joint_id, 54.0, False
+
+    def write_register_f32(self, rid: int, value: float) -> None:
+        self.bus.writes.append((self.joint_id, rid, value))
+        if self.bus.missed_acks > 0:
+            self.bus.missed_acks -= 1
+            raise RuntimeError("write ack not received")
+        if not self.bus.ignore_writes:
+            self.kp = value
+
+    def get_register_f32(self, rid: int, timeout_ms: int = 1000) -> float:
+        return self.kp
+
+    def store_parameters(self) -> None:
+        self.bus.stored_to_flash = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeBus:
+    def __init__(self, missed_acks: int = 0, ignore_writes: bool = False) -> None:
+        self.writes: list[tuple[int, int, float]] = []
+        self.motors: list[_FakeMotor] = []
+        self.missed_acks, self.ignore_writes, self.closed = missed_acks, ignore_writes, False
+        self.stored_to_flash = False
+
+    def add_damiao_motor(self, send_id: int, recv_id: int, model: str) -> _FakeMotor:
+        self.motors.append(_FakeMotor(self, send_id))
+        return self.motors[-1]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _real_apply_position_gains(monkeypatch: pytest.MonkeyPatch, bus: _FakeBus):
+    """The real function (the autouse fixture stubs the module attribute), on a fake bus."""
+    import importlib
+
+    import lelab.rebot_tuning as tuning
+
+    monkeypatch.undo()
+    tuning = importlib.reload(tuning)
+    monkeypatch.setattr(tuning, "_open_bus", lambda port, baud: bus)
+    monkeypatch.setattr(tuning.time, "sleep", lambda s: None)
+    return tuning.apply_position_gains
+
+
+def test_position_gains_are_written_to_ram_per_motor_and_the_bus_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus(missed_acks=2)  # the first two writes lose their acknowledgement
+    _real_apply_position_gains(monkeypatch, bus)("/dev/ttyACM0")
+
+    stored = {motor.joint_id: motor.kp for motor in bus.motors}
+    # CAN ids 1-3 are the 4340P joints, 4-6 the 4310 wrist; the gripper (7) is not touched.
+    assert stored == {1: 800.0, 2: 800.0, 3: 800.0, 4: 200.0, 5: 200.0, 6: 200.0}
+    assert {rid for _, rid, _ in bus.writes} == {27}  # only KP_APR
+    assert bus.stored_to_flash is False
+    assert bus.closed and all(motor.closed for motor in bus.motors)
+
+
+def test_position_gains_fail_loudly_when_a_motor_does_not_take_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus(ignore_writes=True)
+    with pytest.raises(RuntimeError, match="shoulder_pan.*KP_APR reads 54"):
+        _real_apply_position_gains(monkeypatch, bus)("/dev/ttyACM0")
+    assert bus.closed  # the port is free for the next attempt
 
 
 def test_connect_arms_never_powers_the_rebot_follower_when_the_leader_fails() -> None:
@@ -358,7 +483,7 @@ def test_record_config_uses_the_requested_models_devices(monkeypatch: pytest.Mon
     assert cfg.robot.control_mode.value == "pos_vel"
 
 
-def test_rebot_rollout_argv_parses(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rebot_rollout_argv_parses(tmp_path, monkeypatch: pytest.MonkeyPatch, gains_log: list) -> None:
     """The rollout command LeLab builds for a reBot follower is one LeRobot's parser accepts."""
     from lelab import rollout
     from lelab.rollout import InferenceRequest
@@ -400,6 +525,7 @@ def test_rebot_rollout_argv_parses(tmp_path, monkeypatch: pytest.MonkeyPatch) ->
         )
     )
     assert seen_models == [REBOT_B601]
+    assert gains_log == ["/dev/ttyACM0"]  # set before the subprocess takes the port
 
     parsed = []
 

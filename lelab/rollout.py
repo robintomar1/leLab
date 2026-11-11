@@ -40,7 +40,13 @@ from pydantic import BaseModel, field_validator
 from lerobot.utils.device_utils import auto_select_torch_device
 
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
-from .robot_models import DEFAULT_ROBOT_MODEL, RobotModelLiteral, follower_cli_args, get_robot_model
+from .robot_models import (
+    DEFAULT_ROBOT_MODEL,
+    RobotModelLiteral,
+    follower_cli_args,
+    get_robot_model,
+    prepare_follower,
+)
 from .utils.config import setup_follower_calibration_file
 from .utils.devices import follower_lock
 
@@ -362,6 +368,10 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
         ]
         if request.cameras:
             cmd.append(f"--robot.cameras={_format_cameras_arg(request.cameras)}")
+
+        # The rollout subprocess builds its own robot, so the follower's motor
+        # settings are put in place here, while the port is still free.
+        prepare_follower(model, request.follower_port)
 
         log_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / "inference_logs"
         log_dir.mkdir(parents=True, exist_ok=True)

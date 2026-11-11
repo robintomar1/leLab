@@ -116,6 +116,18 @@ def model_for_follower(robot) -> RobotModel:
     raise ValueError(f"No robot model drives a {robot.name!r} follower")
 
 
+def prepare_follower(model: RobotModel, port: str) -> None:
+    """Settings a follower needs in its motors before anything connects to it.
+
+    Runs on a connection of its own, so the port must be free: call it before
+    the follower is connected, or before a subprocess that will connect to it.
+    """
+    if model.key == REBOT_B601:
+        from .rebot_tuning import apply_position_gains
+
+        apply_position_gains(port)
+
+
 def follower_cli_args(model: RobotModel) -> list[str]:
     """`--robot.*` flags, besides type/port/id/cameras, that LeRobot's CLIs need for this follower."""
     if model.key == REBOT_B601:
@@ -206,7 +218,7 @@ def connect_arms(
     if model.calibration == "range":
         _connect_feetech_arms(robot, teleop, follower_port, leader_port)
     else:
-        _connect_zeroed_arms(robot, teleop, follower_port, leader_port)
+        _connect_zeroed_arms(model, robot, teleop, follower_port, leader_port)
 
 
 def _connect_feetech_arms(robot, teleop, follower_port, leader_port) -> None:
@@ -244,7 +256,7 @@ def _connect_feetech_arms(robot, teleop, follower_port, leader_port) -> None:
         teleop.configure()
 
 
-def _connect_zeroed_arms(robot, teleop, follower_port, leader_port) -> None:
+def _connect_zeroed_arms(model: RobotModel, robot, teleop, follower_port, leader_port) -> None:
     # These arms keep their zero in the motors, so there is nothing to write:
     # the calibration file only records that the zero was set. `calibrate=False`
     # keeps connect() from prompting on stdin.
@@ -260,6 +272,7 @@ def _connect_zeroed_arms(robot, teleop, follower_port, leader_port) -> None:
 
     logger.info("Connecting to follower arm...")
     try:
+        prepare_follower(model, follower_port or robot.config.port)
         robot.connect(calibrate=False)
     except Exception as e:
         raise _connection_error("follower", follower_port, e) from e
