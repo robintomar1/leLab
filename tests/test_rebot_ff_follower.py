@@ -263,6 +263,32 @@ def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(followe
     send(rest)
 
 
+def test_a_motor_that_restarted_mid_session_stops_it(follower) -> None:
+    """A motor whose power dips comes back disabled and reports no error at all."""
+    from lelab.utils.devices import MotorFaultError
+
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+
+    def status(code: int):
+        return lambda: SimpleNamespace(pos=0.0, vel=0.0, torq=0.0, status_code=code, t_mos=30.0, t_rotor=30.0)
+
+    for motor in robot.motors.values():
+        motor.get_state = status(0)
+    for _ in range(10):
+        send(rest)  # just connected: reading as disabled before ever being seen enabled is not a drop-out
+
+    for motor in robot.motors.values():
+        motor.get_state = status(1)
+    send(rest)
+    robot.motors["elbow_flex"].get_state = status(0)
+    robot.motors["shoulder_lift"].get_state = status(0)
+    for _ in range(4):
+        send(rest)  # a few reads: could still be a glitch
+    with pytest.raises(MotorFaultError, match="shoulder_lift, elbow_flex went from enabled to disabled"):
+        send(rest)
+
+
 def test_a_fault_is_noticed_in_position_velocity_mode_too(monkeypatch: pytest.MonkeyPatch) -> None:
     """The position-velocity models never read the arm to send a command, only to
     observe it: the fault has to surface there, and through the teleoperation display."""

@@ -69,6 +69,9 @@ MOTOR_FAULTS = {
 
 
 _FEEDBACK_ATTEMPTS = 3
+_STATUS_DISABLED, _STATUS_ENABLED = 0, 1
+# A motor reads as disabled for a moment after it is enabled; this many reads in a row is not that.
+_DROPPED_OUT_READS = 5
 
 
 class _OncePerSecond(logging.Filter):
@@ -167,10 +170,17 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
         self._target_velocity: dict[str, float] = dict.fromkeys(self.motor_names, 0.0)
         self._gravity_torque: dict[str, float] = {}
         self._first_command_at: float | None = None
+        # Motors seen enabled this session, and how many reads in a row each has since read as disabled.
+        self._disabled_reads: dict[str, int] = {}
 
     def connect(self, calibrate: bool = True) -> None:
+        self._disabled_reads = {}
         super().connect(calibrate)
         self._first_command_at = None
+
+    def disable_torque(self) -> None:
+        super().disable_torque()
+        self._disabled_reads = {}  # disabled on purpose: not a drop-out
 
     @property
     def _feedforward_active(self) -> bool:
@@ -253,6 +263,25 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
             for name, state in states.items()
             if (code := getattr(state, "status_code", None)) in MOTOR_FAULTS
         }
+        # A motor whose supply dips restarts: it comes back disabled, with no error to
+        # report and its settings back to what is stored in flash.
+        dropped = []
+        for name, state in states.items():
+            code = getattr(state, "status_code", None)
+            if code == _STATUS_ENABLED:
+                self._disabled_reads[name] = 0
+            elif code == _STATUS_DISABLED and name in self._disabled_reads:
+                self._disabled_reads[name] += 1
+                if self._disabled_reads[name] >= _DROPPED_OUT_READS:
+                    dropped.append(name)
+        if dropped and not faults:
+            raise MotorFaultError(
+                "The follower's motors stopped holding the arm without reporting an error: "
+                + ", ".join(dropped)
+                + " went from enabled to disabled mid-session. That is what a motor does when its "
+                "power dips and it restarts: check the supply and its wiring, or move less violently. "
+                "Start a new session to re-enable the arm."
+            )
         if not faults:
             return
         temperatures = ", ".join(

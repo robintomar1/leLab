@@ -143,6 +143,7 @@ def _log_to_file() -> None:
     except OSError as e:
         logging.getLogger(__name__).warning(f"Not logging to a file: {e}")
         return
+    handler.setLevel(logging.INFO)  # LeRobot's drivers log every read at DEBUG
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s"))
     root.addHandler(handler)
 
