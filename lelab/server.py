@@ -1540,11 +1540,18 @@ class SPAStaticFiles(StaticFiles):
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404 and _accepts_html(Headers(scope=scope).get("accept", "")):
-                return await super().get_response("index.html", scope)
-            raise
+                response = await super().get_response("index.html", scope)
+            else:
+                raise
+        # index.html names the hashed bundle. Without this, a browser keeps a
+        # heuristically cached copy and runs the previous install's frontend
+        # against an upgraded backend. The hashed assets stay cacheable.
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 # Serve the built frontend at /. Must be mounted last so API routes win.

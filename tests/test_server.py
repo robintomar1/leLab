@@ -114,6 +114,15 @@ def test_spa_deep_link_serves_index_html(spa_client: TestClient) -> None:
     assert response.text.lstrip().lower().startswith("<!doctype html")
 
 
+def test_spa_shell_is_revalidated_but_assets_stay_cacheable(spa_client: TestClient, tmp_path: Path) -> None:
+    """The shell names the hashed bundle, so a browser must not reuse a copy from before an upgrade."""
+    (tmp_path / "app-abc123.js").write_text("console.log(1)")
+
+    assert spa_client.get("/", headers=BROWSER_ACCEPT).headers["cache-control"] == "no-cache"
+    assert spa_client.get("/recording", headers=BROWSER_ACCEPT).headers["cache-control"] == "no-cache"
+    assert "cache-control" not in spa_client.get("/app-abc123.js").headers
+
+
 def test_spa_fallback_does_not_mask_api_404(spa_client: TestClient) -> None:
     """Non-HTML clients (XHR, curl, API typos) still get a real 404, not the SPA shell."""
     response = spa_client.get("/recording", headers={"accept": "application/json"})
