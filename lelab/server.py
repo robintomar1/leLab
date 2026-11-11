@@ -126,6 +126,28 @@ for _stream in (sys.stdout, sys.stderr):
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
+
+
+def _log_to_file() -> None:
+    """Keep the server's log on disk too: the terminal it ran in is gone when it is needed."""
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    # Not under the test suite, which imports this module and would write to the user's log.
+    if "pytest" in sys.modules or any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        return
+    log_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / "lelab_logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_dir / "lelab.log", maxBytes=5_000_000, backupCount=3)
+    except OSError as e:
+        logging.getLogger(__name__).warning(f"Not logging to a file: {e}")
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s"))
+    root.addHandler(handler)
+
+
+_log_to_file()
 logger = logging.getLogger(__name__)
 
 

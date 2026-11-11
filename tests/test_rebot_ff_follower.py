@@ -243,6 +243,26 @@ def test_gravity_model_matches_the_urdf_reference_values() -> None:
     assert turned == pytest.approx(work, abs=1e-9)
 
 
+def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(follower) -> None:
+    from lelab.rebot_ff_follower import MotorFaultError
+
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    send(rest)  # healthy motors: nothing raised
+
+    healthy = robot.motors["elbow_flex"].get_state
+    robot.motors["elbow_flex"].get_state = lambda: SimpleNamespace(
+        pos=0.0, vel=0.0, torq=0.0, status_code=0x8, t_mos=41.0, t_rotor=55.0
+    )
+    with pytest.raises(MotorFaultError, match="elbow_flex reports over-voltage") as error:
+        send(rest)
+    assert "41/55" in str(error.value)  # temperatures, to tell a hot motor from a supply problem
+    assert robot.bus.sent == []  # nothing is commanded to an arm that cannot hold itself
+
+    robot.motors["elbow_flex"].get_state = healthy
+    send(rest)
+
+
 def test_gravity_compensation_refuses_the_robstride_build() -> None:
     from lelab.rebot_ff_follower import RebotB601FeedforwardFollowerConfig as Config
 

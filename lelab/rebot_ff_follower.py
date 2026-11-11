@@ -53,6 +53,23 @@ from .rebot_gravity import JOINTS as GRAVITY_JOINTS, gravity_torques
 
 FOLLOWER_TYPE = "lelab_rebot_b601_ff_follower"
 
+# What a Damiao motor reports in its feedback once it has protected itself. It
+# stops producing torque until the error is cleared, so the arm goes limp.
+MOTOR_FAULTS = {
+    0x8: "over-voltage",
+    0x9: "under-voltage",
+    0xA: "over-current",
+    0xB: "driver over-temperature",
+    0xC: "winding over-temperature",
+    0xD: "communication lost",
+    0xE: "overload",
+}
+
+
+class MotorFaultError(RuntimeError):
+    """A motor shut itself down."""
+
+
 # Targets further apart in time than this are separate motions, not one to differentiate.
 _MAX_TARGET_GAP_S = 0.25
 
@@ -162,11 +179,13 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
                 low, high = self._joint_limits.get(motor, (-math.inf, math.inf))
                 self._target_velocity[motor] = self._estimators[motor].update(now, max(low, min(high, value)))
 
-        # One read of the arm serves both the bound on the target and the gravity torque.
+        # One read of the arm serves the bound on the target, the gravity torque, and
+        # noticing a motor that has shut itself down.
         states = None
         self._gravity_torque = {}
         if self.config.max_relative_target is not None or self.config.gravity_compensation:
             states = self._read_feedback()
+            self._raise_on_fault(states)
             present_pos = self._present_pos(states)
             if self.config.gravity_compensation:
                 self._gravity_torque = self._gravity_feedforward(now, present_pos)
@@ -183,6 +202,25 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
                 state = states.get(motor_name) if states is not None else None
                 sent_pos[motor_name] = self._send_joint(motor_name, position_deg, state)
         return {f"{motor}.pos": val for motor, val in sent_pos.items()}
+
+    def _raise_on_fault(self, states: dict) -> None:
+        faults = {
+            name: MOTOR_FAULTS[code]
+            for name, state in states.items()
+            if (code := getattr(state, "status_code", None)) in MOTOR_FAULTS
+        }
+        if not faults:
+            return
+        temperatures = ", ".join(
+            f"{name} {getattr(state, 't_mos', float('nan')):.0f}/{getattr(state, 't_rotor', float('nan')):.0f}"
+            for name, state in states.items()
+        )
+        raise MotorFaultError(
+            "The follower's motors protected themselves and the arm is limp: "
+            + ", ".join(f"{name} reports {fault}" for name, fault in faults.items())
+            + f". Driver/winding temperatures in °C: {temperatures}. "
+            "Power-cycle the arm, or start a new session, to clear it."
+        )
 
     def _send_joint(self, motor_name: str, position_deg: float, state=None) -> float:
         if motor_name == GRIPPER_MOTOR or not self._feedforward_active:

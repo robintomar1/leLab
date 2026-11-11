@@ -40,6 +40,8 @@ current_robot = None
 current_teleop = None
 # Model of the arms in the active session; decides how joints map to the URDF.
 current_robot_model: str = DEFAULT_ROBOT_MODEL
+# Why the last session ended on its own, if it did; cleared when the next one starts.
+last_error: str | None = None
 # Timing of the last window of control cycles, for /teleoperation-status.
 loop_stats: dict[str, float] | None = None
 
@@ -172,6 +174,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
     success. Only the teleoperation loop runs in the background thread.
     """
     global teleoperation_active, teleoperation_thread, current_robot, current_teleop, current_robot_model
+    global last_error
 
     from . import record as _record, replay as _replay, rollout as _rollout
 
@@ -185,6 +188,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
         if _replay.replay_active:
             return {"success": False, "message": "Replay is currently active. Stop it first."}
         teleoperation_active = True
+        last_error = None
 
     robot = None
     teleop_device = None
@@ -223,7 +227,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
         # Stream the arms in the background; the worker owns disconnect so stop()
         # does not race the serial bus from the request thread.
         def teleoperation_worker():
-            global teleoperation_active, current_robot, current_teleop, loop_stats
+            global teleoperation_active, current_robot, current_teleop, loop_stats, last_error
 
             logger.info("Starting teleoperation loop...")
             try:
@@ -261,7 +265,8 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
 
                     time.sleep(0.001)
             except Exception as e:
-                logger.error(f"Error during teleoperation loop: {e}")
+                last_error = str(e)
+                logger.exception(f"Teleoperation stopped by an error: {e}")
             finally:
                 _safe_disconnect(robot)
                 _safe_disconnect(teleop_device)
@@ -329,6 +334,7 @@ def handle_teleoperation_status() -> dict[str, Any]:
         "robot_model": current_robot_model,
         # Achieved control-loop timing over the last window; None until one has elapsed.
         "loop": loop_stats if teleoperation_active else None,
+        "last_error": last_error,
         "available_controls": {
             "stop_teleoperation": teleoperation_active,
         },
