@@ -141,6 +141,7 @@ def test_feedforward_follows_the_leader_not_the_clipped_target(follower) -> None
     max_relative_target of the arm. That clipped target moves as the arm moves: feeding
     its velocity forward would cancel the damping that slows the approach."""
     robot, send = follower
+    robot.config.max_dynamic_torque = None  # this is about the bound on the target alone
     rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
     sent = {}
     for i in range(100):
@@ -261,6 +262,70 @@ def test_a_motor_that_shut_itself_down_stops_the_session_with_its_reason(followe
 
     robot.motors["elbow_flex"].get_state = healthy
     send(rest)
+
+
+def _dynamic_torque(robot, joint: str, command: tuple) -> float:
+    """What the motor's spring and damper would add, given the command and the arm's state."""
+    _, position, velocity, kp, kd, _ = command
+    state = robot.motors[joint].get_state()
+    return kp * (position - state.pos) + kd * (velocity - state.vel)
+
+
+def test_a_violent_move_is_held_to_the_torque_bound(follower) -> None:
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    sent = {}
+    for i in range(60):  # the leader sweeps both joints away at 400 deg/s; the arm has not moved yet
+        sent = send({**rest, "elbow_flex": -400.0 * i * 0.005, "wrist_flex": 400.0 * i * 0.005})
+
+    # Unbounded this is 16 N.m of spring plus 31 N.m of damping on the elbow.
+    assert _dynamic_torque(robot, "elbow_flex", sent["elbow_flex"]) == pytest.approx(-10.0)
+    assert _dynamic_torque(robot, "wrist_flex", sent["wrist_flex"]) == pytest.approx(2.5)
+    # Still the same push: target ahead of the arm, moving the same way, gains untouched.
+    _, position, velocity, kp, kd, _ = sent["elbow_flex"]
+    assert position < 0 and velocity < 0
+    assert (kp, kd) == (45.0, 12.0)
+
+
+def test_braking_a_fast_arm_is_held_to_the_torque_bound(follower) -> None:
+    """The damper alone asks for 31 N.m to stop a joint moving at 150 deg/s."""
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    robot.motors["shoulder_lift"].get_state = lambda: SimpleNamespace(
+        pos=0.0, vel=math.radians(150.0), torq=0.0, status_code=1, t_mos=30.0, t_rotor=30.0
+    )
+    sent = send(rest)
+    assert _dynamic_torque(robot, "shoulder_lift", sent["shoulder_lift"]) == pytest.approx(-10.0)
+
+
+def test_ordinary_motion_is_not_touched_by_the_torque_bound(follower) -> None:
+    robot, send = follower
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    sent = {}
+    for i in range(200):  # 30 deg/s, the arm 3 degrees behind: about 2.4 N.m of spring, no damping
+        target = 30.0 * i * 0.005
+        robot.motors["shoulder_pan"].get_state = lambda t=target: SimpleNamespace(
+            pos=math.radians(t - 3.0),
+            vel=math.radians(30.0),
+            torq=0.0,
+            status_code=1,
+            t_mos=30.0,
+            t_rotor=30.0,
+        )
+        sent = send({**rest, "shoulder_pan": target})
+    _, position, velocity, *_ = sent["shoulder_pan"]
+    assert position == pytest.approx(math.radians(30.0 * 199 * 0.005))  # exactly what was asked
+    assert velocity == pytest.approx(math.radians(30.0), rel=0.01)
+
+
+def test_the_torque_bound_can_be_removed(follower) -> None:
+    robot, send = follower
+    robot.config.max_dynamic_torque = None
+    rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    sent = {}
+    for i in range(60):
+        sent = send({**rest, "elbow_flex": -400.0 * i * 0.005})
+    assert abs(_dynamic_torque(robot, "elbow_flex", sent["elbow_flex"])) > 40.0
 
 
 def test_a_motor_that_restarted_mid_session_stops_it(follower) -> None:

@@ -144,6 +144,24 @@ class RebotB601FeedforwardFollowerConfig(RebotB601FollowerRobotConfig):
     # The gravity torque fades in over this long after the first command, so a
     # resting arm is not jolted when a session starts.
     gravity_ramp_s: float = 1.0
+    # Most torque, in N·m, the spring and damper together may ask of each joint, on top
+    # of the gravity torque. Left alone, a violent move asks every big joint for its
+    # peak at once: 16 N·m of spring at the `max_relative_target` bound and 31 N·m of
+    # damping at 150 deg/s, against a 27 N·m motor. That draws more than a 350 W
+    # supply delivers; its overload protection cuts the output, the motors restart
+    # disabled, and the arm drops. Ordinary teleoperation stays under 6 N·m on the
+    # shoulder and elbow (a rare 9 N·m peak) and about 1 N·m on the wrist, so these
+    # bounds only bite in moves like that. None removes the bound.
+    max_dynamic_torque: dict[str, float] | None = field(
+        default_factory=lambda: {
+            "shoulder_pan": 10.0,
+            "shoulder_lift": 10.0,
+            "elbow_flex": 10.0,
+            "wrist_flex": 2.5,
+            "wrist_yaw": 2.5,
+            "wrist_roll": 2.5,
+        }
+    )
     # Fraction of the target's velocity sent to the motors. 0 sends none.
     velocity_feedforward: float = 1.0
     # Time constant of the velocity estimate's low-pass filter, in seconds.
@@ -221,7 +239,11 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
         # noticing a motor that has shut itself down.
         states = None
         self._gravity_torque = {}
-        if self.config.max_relative_target is not None or self.config.gravity_compensation:
+        if (
+            self.config.max_relative_target is not None
+            or self.config.gravity_compensation
+            or self.config.max_dynamic_torque
+        ):
             states = self._read_feedback()
             present_pos = self._present_pos(states)
             if self.config.gravity_compensation:
@@ -303,11 +325,24 @@ class RebotB601FeedforwardFollower(RebotB601Follower):
         if limits is not None:
             position_deg = max(limits[0], min(limits[1], position_deg))
         velocity_deg_s = self.config.velocity_feedforward * self._target_velocity[motor_name]
+        kp, kd = self._mit_kp[motor_name], self._mit_kd[motor_name]
+        position = math.radians(self._public_to_motor_position(motor_name, position_deg))
+        velocity = math.radians(self._public_to_motor_position(motor_name, velocity_deg_s))
+
+        # The motor adds kp * (position - where it is) + kd * (velocity - how fast it is
+        # going) to the feed-forward torque. Past the bound, both targets are pulled
+        # towards the arm's own state by the same factor: the same push, only weaker.
+        bound = (self.config.max_dynamic_torque or {}).get(motor_name)
+        if bound is not None and state is not None:
+            position_error, velocity_error = position - state.pos, velocity - state.vel
+            torque = kp * position_error + kd * velocity_error
+            if abs(torque) > bound:
+                keep = bound / abs(torque)
+                position = state.pos + keep * position_error
+                velocity = state.vel + keep * velocity_error
+                position_deg = self._motor_to_public_position(motor_name, math.degrees(position))
+
         self.motors[motor_name].send_mit(
-            math.radians(self._public_to_motor_position(motor_name, position_deg)),
-            math.radians(self._public_to_motor_position(motor_name, velocity_deg_s)),
-            self._mit_kp[motor_name],
-            self._mit_kd[motor_name],
-            self._gravity_torque.get(motor_name, 0.0),
+            position, velocity, kp, kd, self._gravity_torque.get(motor_name, 0.0)
         )
         return position_deg
