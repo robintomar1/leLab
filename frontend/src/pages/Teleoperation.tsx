@@ -12,8 +12,19 @@ const TeleoperationPage = () => {
   const { toast } = useToast();
   const { baseUrl, fetchWithHeaders } = useApi();
   // Teleoperation is started for the selected robot.
-  const { selectedRecord } = useRobots();
-  const modelInfo = robotModelInfo(selectedRecord?.robot_model);
+  const { selectedName, selectedRecord, isLoading } = useRobots();
+  // The records load after the first render: wait for the selected one rather
+  // than load the default arm's meshes and then swap them out. If they cannot
+  // be loaded, the default arm is shown.
+  const recordsRequested = useRef(false);
+  if (isLoading) recordsRequested.current = true;
+  const awaitingRecord =
+    !!selectedName &&
+    !selectedRecord &&
+    !(recordsRequested.current && !isLoading);
+  const urdf = awaitingRecord
+    ? null
+    : robotModelInfo(selectedRecord?.robot_model).urdf;
 
   // Stop teleoperation exactly once, however the user leaves, so the back
   // button, an in-app link, and the unmount safety net can't double-stop or
@@ -79,7 +90,7 @@ const TeleoperationPage = () => {
           onGoBack={handleGoBack}
           className="lg:w-full"
           rightSlot={<TeleopCameraPanel />}
-          noModelFor={modelInfo.hasUrdf ? undefined : modelInfo.label}
+          urdf={urdf}
         />
       </div>
     </div>

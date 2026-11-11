@@ -26,6 +26,7 @@ optional `rebot` extra.
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -41,6 +42,30 @@ REBOT_MIT_FF = "rebot_mit_ff"
 DEFAULT_ROBOT_MODEL = SO101
 
 RobotModelLiteral = Literal["so101", "rebot_default", "rebot_high_pos_gains", "rebot_mit", "rebot_mit_ff"]
+
+
+@dataclass(frozen=True)
+class UrdfJoint:
+    """A joint of the URDF the frontend renders, and how a motor's reading sets it."""
+
+    name: str
+    # URDF units per degree the motor reports: radians for a revolute joint,
+    # metres for a prismatic one.
+    per_degree: float = math.pi / 180.0
+    # Travel of the joint in URDF units, when the reading has to be held within it.
+    limits: tuple[float, float] | None = None
+
+    def value(self, degrees: float) -> float:
+        """The URDF joint value for a motor reading in degrees."""
+        value = degrees * self.per_degree
+        if self.limits is not None:
+            value = min(max(value, self.limits[0]), self.limits[1])
+        return value
+
+
+def _revolute(name: str) -> tuple[UrdfJoint, ...]:
+    """A motor that turns one revolute URDF joint, degree for degree."""
+    return (UrdfJoint(name),)
 
 
 @dataclass(frozen=True)
@@ -60,8 +85,10 @@ class RobotModel:
     # "range": record each joint's range of motion (Feetech).
     # "zero": pose the arm at its zero position, which the motors then store.
     calibration: Literal["range", "zero"]
-    # Motor name -> joint name in the URDF the frontend renders, when there is one.
-    urdf_joints: dict[str, str] | None
+    # Motor name -> the joints it sets in the URDF the frontend renders (see
+    # frontend/src/lib/robotModels.ts), when there is one. A motor can set several:
+    # the reBot gripper motor slides both fingers.
+    urdf_joints: dict[str, tuple[UrdfJoint, ...]] | None
     # pip extra of LeLab that installs the drivers, when they are optional.
     extra: str | None = None
     # Follower config fields that differ from LeRobot's defaults; also sent as
@@ -87,6 +114,34 @@ _REBOT_MIT_OPTIONS: dict[str, Any] = {
     },
 }
 
+# The B601 in Seeed's ReBot_Arm_DM.urdf (frontend/public/rebot-b601-urdf). Its six arm
+# joints are the motors' own angles: same zero, same sign (rebot_gravity.py uses the
+# same URDF with the same angles). The gripper motor reads 0° closed to -270° open;
+# the URDF has the fingers touching at 0 and sliding 28.5 mm apart, the left one
+# towards +y and the right one towards -y.
+_REBOT_GRIPPER_OPEN_DEG = -270.0
+_REBOT_FINGER_TRAVEL_M = 0.0285
+_REBOT_URDF_JOINTS: dict[str, tuple[UrdfJoint, ...]] = {
+    "shoulder_pan": _revolute("joint1"),
+    "shoulder_lift": _revolute("joint2"),
+    "elbow_flex": _revolute("joint3"),
+    "wrist_flex": _revolute("joint4"),
+    "wrist_yaw": _revolute("joint5"),
+    "wrist_roll": _revolute("joint6"),
+    "gripper": (
+        UrdfJoint(
+            "finger_left",
+            per_degree=_REBOT_FINGER_TRAVEL_M / _REBOT_GRIPPER_OPEN_DEG,
+            limits=(0.0, _REBOT_FINGER_TRAVEL_M),
+        ),
+        UrdfJoint(
+            "finger_right",
+            per_degree=-_REBOT_FINGER_TRAVEL_M / _REBOT_GRIPPER_OPEN_DEG,
+            limits=(-_REBOT_FINGER_TRAVEL_M, 0.0),
+        ),
+    ),
+}
+
 # LeLab's own follower for the B601, registered by lelab/rebot_ff_follower.py.
 _REBOT_FOLLOWER = "lelab_rebot_b601_ff_follower"
 
@@ -107,7 +162,7 @@ def _rebot(
         follower_name="rebot_b601_follower",
         leader_name="rebot_102_leader",
         calibration="zero",
-        urdf_joints=None,
+        urdf_joints=_REBOT_URDF_JOINTS,
         extra="rebot",
         follower_options=follower_options,
         position_kp=position_kp,
@@ -125,12 +180,12 @@ ROBOT_MODELS: dict[str, RobotModel] = {
         leader_name="so_leader",
         calibration="range",
         urdf_joints={
-            "shoulder_pan": "Rotation",
-            "shoulder_lift": "Pitch",
-            "elbow_flex": "Elbow",
-            "wrist_flex": "Wrist_Pitch",
-            "wrist_roll": "Wrist_Roll",
-            "gripper": "Jaw",
+            "shoulder_pan": _revolute("Rotation"),
+            "shoulder_lift": _revolute("Pitch"),
+            "elbow_flex": _revolute("Elbow"),
+            "wrist_flex": _revolute("Wrist_Pitch"),
+            "wrist_roll": _revolute("Wrist_Roll"),
+            "gripper": _revolute("Jaw"),
         },
     ),
     # The same arms, driven four ways. Position-velocity mode closes the gap to

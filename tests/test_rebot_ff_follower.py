@@ -366,7 +366,11 @@ def test_a_fault_is_noticed_in_position_velocity_mode_too(monkeypatch: pytest.Mo
     bus = _Bus()
     robot.bus = bus
     robot.motors = {name: _Motor(bus, name) for name in robot.motor_names}
-    assert set(get_joint_positions_from_robot(robot, REBOT_HIGH_POS_GAINS)) == set(robot.motor_names)
+    urdf_joints = get_robot_model(REBOT_HIGH_POS_GAINS).urdf_joints
+    assert set(urdf_joints) == set(robot.motor_names)
+    assert set(get_joint_positions_from_robot(robot, REBOT_HIGH_POS_GAINS)) == {
+        joint.name for joints in urdf_joints.values() for joint in joints
+    }
 
     robot.motors["shoulder_lift"].get_state = lambda: SimpleNamespace(
         pos=0.0, vel=0.0, torq=0.0, status_code=0x9, t_mos=30.0, t_rotor=30.0

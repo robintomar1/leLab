@@ -8,6 +8,37 @@ export type RobotModelKey =
   | "rebot_mit"
   | "rebot_mit_ff";
 
+/** The 3D model of an arm, served from frontend/public. */
+export interface UrdfModel {
+  /** URL of the URDF. Relative mesh paths in it resolve against this URL. */
+  path: string;
+  /** ROS package name -> URL of its directory, for the URDF's `package://` mesh paths. */
+  packages?: Record<string, string>;
+}
+
+/**
+ * The URL to fetch a mesh from, given the one urdf-loader resolved. It leaves a
+ * `package://` path under a package directory it has to guess; this puts it
+ * under the directory the model declares.
+ */
+export const meshUrl = (model: UrdfModel, url: string): string => {
+  for (const [pkg, base] of Object.entries(model.packages ?? {})) {
+    const at = url.indexOf(`${pkg}/`);
+    if (at !== -1) return `${base}/${url.slice(at + pkg.length + 1)}`;
+  }
+  return url;
+};
+
+const SO101_URDF: UrdfModel = {
+  path: "/so-101-urdf/urdf/so101_new_calib.urdf",
+  packages: { so_arm_description: "/so-101-urdf" },
+};
+
+// Seeed's ReBot_Arm_DM.urdf; its meshes are relative paths (../meshes/...).
+const REBOT_B601_URDF: UrdfModel = {
+  path: "/rebot-b601-urdf/urdf/ReBot_Arm_DM.urdf",
+};
+
 export interface RobotModelInfo {
   key: RobotModelKey;
   label: string;
@@ -16,8 +47,11 @@ export interface RobotModelInfo {
    * "zero": the user poses the arm at its zero position, which the motors store.
    */
   calibration: "range" | "zero";
-  /** Whether the 3D viewer has a model of this arm. */
-  hasUrdf: boolean;
+  /**
+   * The model the 3D viewer shows. The backend sends joint values under this
+   * URDF's joint names (`urdf_joints` in lelab/robot_models.py).
+   */
+  urdf: UrdfModel;
   /** The robot_type LeRobot stamps on datasets recorded with this follower. */
   datasetRobotType: string;
 }
@@ -26,7 +60,7 @@ const rebot = (key: RobotModelKey, variant: string): RobotModelInfo => ({
   key,
   label: `reBot B601 + Arm 102 leader: ${variant}`,
   calibration: "zero",
-  hasUrdf: false,
+  urdf: REBOT_B601_URDF,
   datasetRobotType: "rebot_b601_follower",
 });
 
@@ -37,7 +71,7 @@ export const ROBOT_MODELS: Record<RobotModelKey, RobotModelInfo> = {
     key: "so101",
     label: "SO-101",
     calibration: "range",
-    hasUrdf: true,
+    urdf: SO101_URDF,
     datasetRobotType: "so_follower",
   },
   // The same arms, driven four ways; see lelab/robot_models.py.

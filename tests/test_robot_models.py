@@ -436,7 +436,7 @@ def test_robot_endpoints_carry_the_model(
     assert {m["key"] for m in models["models"]} == set(ROBOT_MODELS)
     rebot = next(m for m in models["models"] if m["key"] == REBOT_HIGH_POS_GAINS)
     assert rebot["calibration"] == "zero"
-    assert rebot["has_urdf"] is False
+    assert rebot["has_urdf"] is True
     assert rebot["dataset_robot_type"] == "rebot_b601_follower"
 
     created = client.post("/robots/arm?create=true", json={"robot_model": REBOT_HIGH_POS_GAINS})
@@ -455,18 +455,167 @@ def test_robot_endpoints_carry_the_model(
 # --- feature modules ---------------------------------------------------------
 
 
-def test_joint_positions_of_a_model_without_urdf_keep_their_motor_names() -> None:
-    from lelab.teleoperate import get_joint_positions_from_robot
+def test_joint_positions_of_a_model_without_urdf_keep_their_motor_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses
+
+    import lelab.teleoperate as teleop
 
     class _Robot:
         def get_observation(self):
             return {"shoulder_pan.pos": 90.0, "wrist_yaw.pos": -45.0, "front": object()}
 
-    positions = get_joint_positions_from_robot(_Robot(), REBOT_HIGH_POS_GAINS)
+    no_urdf = dataclasses.replace(get_robot_model(REBOT_HIGH_POS_GAINS), urdf_joints=None)
+    monkeypatch.setattr(teleop, "get_robot_model", lambda key: no_urdf)
+    positions = teleop.get_joint_positions_from_robot(_Robot(), REBOT_HIGH_POS_GAINS)
     assert positions == {
         "shoulder_pan": pytest.approx(math.pi / 2),
         "wrist_yaw": pytest.approx(-math.pi / 4),
     }
+
+
+# --- 3D viewer joints --------------------------------------------------------
+
+_PUBLIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
+_URDF_FILES = {
+    "so101": _PUBLIC / "so-101-urdf" / "urdf" / "so101_new_calib.urdf",
+    "rebot_b601": _PUBLIC / "rebot-b601-urdf" / "urdf" / "ReBot_Arm_DM.urdf",
+}
+_REBOT_MOTORS = (
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_yaw",
+    "wrist_roll",
+    "gripper",
+)
+
+
+def _urdf_joints(family: str) -> dict:
+    import xml.etree.ElementTree as ET
+
+    return {joint.get("name"): joint for joint in ET.parse(_URDF_FILES[family]).getroot().findall("joint")}
+
+
+def _rebot_observation(**degrees: float) -> dict[str, float]:
+    return {f"{motor}.pos": degrees.get(motor, 0.0) for motor in _REBOT_MOTORS}
+
+
+class _Observed:
+    def __init__(self, observation: dict[str, float]) -> None:
+        self._observation = observation
+
+    def get_observation(self) -> dict[str, float]:
+        return self._observation
+
+
+@pytest.mark.parametrize("key", list(ROBOT_MODELS))
+def test_every_mapped_joint_is_a_movable_joint_of_the_shipped_urdf(key: str) -> None:
+    model = get_robot_model(key)
+    in_urdf = _urdf_joints(model.family)
+    for motor, joints in model.urdf_joints.items():
+        for joint in joints:
+            assert joint.name in in_urdf, f"{motor} -> {joint.name} is not in the URDF"
+            kind = in_urdf[joint.name].get("type")
+            assert kind in ("revolute", "continuous", "prismatic")
+            # Degrees to radians for a turning joint, and never for a sliding one.
+            assert (joint.per_degree == pytest.approx(math.pi / 180.0)) == (kind != "prismatic")
+            if joint.limits is not None:
+                limit = in_urdf[joint.name].find("limit")
+                assert joint.limits == (float(limit.get("lower")), float(limit.get("upper")))
+
+
+def test_no_two_motors_drive_the_same_urdf_joint() -> None:
+    for model in ROBOT_MODELS.values():
+        names = [joint.name for joints in model.urdf_joints.values() for joint in joints]
+        assert len(names) == len(set(names))
+
+
+def test_rebot_arm_motors_map_to_joint1_to_joint6_in_radians() -> None:
+    from lelab.teleoperate import get_joint_positions_from_robot
+
+    model = get_robot_model(REBOT_HIGH_POS_GAINS)
+    assert list(model.urdf_joints) == list(_REBOT_MOTORS)
+    assert [[j.name for j in joints] for joints in model.urdf_joints.values()][:6] == [
+        [f"joint{i}"] for i in range(1, 7)
+    ]
+
+    observation = _rebot_observation(
+        shoulder_pan=90.0,
+        shoulder_lift=-60.0,
+        elbow_flex=-45.0,
+        wrist_flex=30.0,
+        wrist_yaw=-15.0,
+        wrist_roll=180.0,
+    )
+    observation["front"] = object()  # a camera frame is not a joint
+    positions = get_joint_positions_from_robot(_Observed(observation), REBOT_HIGH_POS_GAINS)
+    assert positions == {
+        "joint1": pytest.approx(math.radians(90.0)),
+        "joint2": pytest.approx(math.radians(-60.0)),
+        "joint3": pytest.approx(math.radians(-45.0)),
+        "joint4": pytest.approx(math.radians(30.0)),
+        "joint5": pytest.approx(math.radians(-15.0)),
+        "joint6": pytest.approx(math.radians(180.0)),
+        "finger_left": pytest.approx(0.0),
+        "finger_right": pytest.approx(0.0),
+    }
+
+
+@pytest.mark.parametrize(
+    ("gripper_degrees", "opening"),
+    [
+        (0.0, 0.0),  # closed: the fingers touch
+        (-135.0, 0.01425),
+        (-270.0, 0.0285),  # fully open
+        (-300.0, 0.0285),  # past the travel: held at the finger's limit
+        (5.0, 0.0),
+    ],
+)
+def test_rebot_gripper_slides_both_fingers_in_metres(gripper_degrees: float, opening: float) -> None:
+    from lelab.teleoperate import get_joint_positions_from_robot
+
+    robot = _Observed(_rebot_observation(gripper=gripper_degrees))
+    positions = get_joint_positions_from_robot(robot, REBOT_MIT_FF)
+    assert positions["finger_left"] == pytest.approx(opening)
+    assert positions["finger_right"] == pytest.approx(-opening)
+
+
+def test_all_rebot_models_share_one_urdf_mapping() -> None:
+    mappings = [m.urdf_joints for m in ROBOT_MODELS.values() if m.family == "rebot_b601"]
+    assert len(mappings) == 4
+    assert all(mapping == mappings[0] for mapping in mappings)
+
+
+def test_a_failed_read_reports_every_urdf_joint_at_zero() -> None:
+    from lelab.teleoperate import get_joint_positions_from_robot
+
+    class _Broken:
+        def get_observation(self):
+            raise OSError("bus gone")
+
+    positions = get_joint_positions_from_robot(_Broken(), REBOT_DEFAULT)
+    assert positions == dict.fromkeys(
+        ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "finger_left", "finger_right"], 0.0
+    )
+
+
+@pytest.mark.parametrize("family", list(_URDF_FILES))
+def test_every_mesh_the_shipped_urdf_references_is_shipped(family: str) -> None:
+    import xml.etree.ElementTree as ET
+
+    urdf = _URDF_FILES[family]
+    meshes = [mesh.get("filename") for mesh in ET.parse(urdf).getroot().iter("mesh")]
+    assert meshes
+    for filename in meshes:
+        if filename.startswith("package://"):
+            # frontend/src/lib/robotModels.ts serves the package from the model's directory.
+            path = urdf.parents[1] / filename.split("/", 3)[3]
+        else:
+            path = urdf.parent / filename
+        assert path.is_file(), f"{filename} is missing"
 
 
 def test_teleoperation_builds_the_requested_models_arms(monkeypatch: pytest.MonkeyPatch) -> None:

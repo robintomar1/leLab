@@ -109,15 +109,19 @@ def get_joint_positions_from_robot(robot, robot_model: str = DEFAULT_ROBOT_MODEL
     joint. (The gripper reports 0–100 rather than degrees, but that range lands
     inside the Jaw limit, matching the open/closed sweep.)
 
+    The robot model says which URDF joints each motor sets and how
+    (``RobotModel.urdf_joints``): radians for a revolute joint, metres for a
+    prismatic one such as the reBot's fingers.
+
     A model without a URDF in the frontend reports its joints under their motor
-    names, still in radians.
+    names, in radians.
 
     Args:
         robot: The connected follower
         robot_model: Key of the robot model the follower belongs to
 
     Returns:
-        Dictionary mapping URDF joint names to radian values
+        Dictionary mapping URDF joint names to their values (radians, or metres if prismatic)
     """
     motor_to_urdf_mapping = get_robot_model(robot_model).urdf_joints
 
@@ -132,16 +136,18 @@ def get_joint_positions_from_robot(robot, robot_model: str = DEFAULT_ROBOT_MODEL
 
         joint_positions: dict[str, float] = {}
         debug_rows = []
-        for motor_name, urdf_joint_name in motor_to_urdf_mapping.items():
+        for motor_name, urdf_joints in motor_to_urdf_mapping.items():
             motor_key = f"{motor_name}.pos"
             if motor_key not in observation:
                 logger.warning(f"Motor {motor_key} not found in observation")
-                joint_positions[urdf_joint_name] = 0.0
+                joint_positions.update(dict.fromkeys((joint.name for joint in urdf_joints), 0.0))
                 continue
 
             angle_degrees = observation[motor_key]
-            joint_positions[urdf_joint_name] = angle_degrees * math.pi / 180.0
-            debug_rows.append(f"{motor_name:14s} {angle_degrees:+8.2f}° → {urdf_joint_name:11s}")
+            for joint in urdf_joints:
+                joint_positions[joint.name] = joint.value(angle_degrees)
+            names = ", ".join(joint.name for joint in urdf_joints)
+            debug_rows.append(f"{motor_name:14s} {angle_degrees:+8.2f}° → {names}")
 
         # Throttled debug print (~once per second at 20 Hz broadcast).
         now = time.time()
@@ -155,7 +161,8 @@ def get_joint_positions_from_robot(robot, robot_model: str = DEFAULT_ROBOT_MODEL
         raise  # not a display hiccup: the arm is limp and the session has to end
     except Exception as e:
         logger.error(f"Error getting joint positions: {e}")
-        return dict.fromkeys((motor_to_urdf_mapping or {}).values(), 0.0)
+        joints = (motor_to_urdf_mapping or {}).values()
+        return {joint.name: 0.0 for urdf_joints in joints for joint in urdf_joints}
 
 
 def _safe_disconnect(device) -> None:

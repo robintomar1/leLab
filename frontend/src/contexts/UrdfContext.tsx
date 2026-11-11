@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { UrdfProcessor, readUrdfFileContent } from "@/lib/UrdfDragAndDrop";
 import { UrdfFileModel } from "@/lib/types";
 import { RobotAnimationConfig } from "@/lib/types";
+import { DEFAULT_ROBOT_MODEL, ROBOT_MODELS } from "@/lib/robotModels";
 
 // Define the result interface for Urdf detection
 interface UrdfDetectionResult {
@@ -84,7 +85,7 @@ export const UrdfProvider: React.FC<UrdfProviderProps> = ({ children }) => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch("/so-101-urdf/urdf/so101_new_calib.urdf");
+        const response = await fetch(ROBOT_MODELS[DEFAULT_ROBOT_MODEL].urdf.path);
         if (!response.ok) {
           throw new Error(`Failed to fetch default Urdf: ${response.statusText}`);
         }
