@@ -128,7 +128,8 @@ def test_mit_commands_carry_the_targets_velocity(follower) -> None:
     assert mode == "mit"
     assert position_rad == pytest.approx(math.radians(30.0 * 199 * 0.005))
     assert velocity_rad_s == pytest.approx(math.radians(30.0), rel=0.01)
-    assert (kp, kd, torque) == (45.0, 12.0, 0.0)  # LeRobot's gains: the loop is no stiffer
+    assert (kp, kd) == (45.0, 12.0)  # LeRobot's gains: the loop is no stiffer
+    assert torque == pytest.approx(0.0, abs=1e-9)  # a vertical axis carries no weight
     # A joint whose target is not moving is sent no velocity.
     assert sent["elbow_flex"][2] == 0.0
     # The gripper keeps LeRobot's force-position command.
@@ -165,13 +166,88 @@ def test_no_feedforward_past_a_joint_limit(follower) -> None:
     assert velocity_rad_s == pytest.approx(0.0, abs=1e-3)
 
 
-def test_plain_mit_model_is_lerobots_own_follower_with_a_bounded_target() -> None:
-    from lerobot.robots.rebot_b601_follower import RebotB601Follower
-
+def test_plain_mit_model_carries_the_arms_weight_but_sends_no_velocity() -> None:
     robot = make_follower(get_robot_model(REBOT_MIT), "/dev/ttyACM0", "arm")
-    assert type(robot) is RebotB601Follower
+    assert type(robot) is RebotB601FeedforwardFollower
     assert robot.config.control_mode.value == "mit"
     assert robot.config.max_relative_target["shoulder_pan"] == 20.0
+    assert robot.config.velocity_feedforward == 0.0
+    assert robot.config.gravity_compensation == 1.0
+
+
+WORK_POSE = {
+    "shoulder_pan": -36.0,
+    "shoulder_lift": -80.0,
+    "elbow_flex": -48.0,
+    "wrist_flex": 45.0,
+    "wrist_yaw": -42.0,
+    "wrist_roll": -74.0,
+    "gripper": 0.0,
+}
+
+
+def _hold(robot, send, seconds: float) -> dict[str, tuple]:
+    """Hold WORK_POSE, the arm already there, for `seconds`; returns the last commands."""
+    for name, deg in WORK_POSE.items():
+        robot.motors[name].position_rad = math.radians(deg)
+    sent = {}
+    for _ in range(round(seconds / 0.005)):
+        sent = send(WORK_POSE)
+    return sent
+
+
+def test_gravity_torque_is_fed_forward_once_faded_in(follower) -> None:
+    from lelab.rebot_gravity import gravity_torques
+
+    robot, send = follower
+    sent = _hold(robot, send, 1.5)
+    model = gravity_torques([math.radians(WORK_POSE[j]) for j in ARM_JOINTS])
+
+    torque = {joint: sent[joint][5] for joint in ARM_JOINTS}
+    assert torque["shoulder_lift"] == pytest.approx(model[1])  # about +4.3 N.m here
+    assert torque["elbow_flex"] == pytest.approx(model[2])  # about -5.8 N.m
+    assert torque["wrist_flex"] == pytest.approx(1.10 * model[3])  # the scale tuned on the arm
+    assert abs(torque["shoulder_lift"]) > 3.0 and abs(torque["elbow_flex"]) > 4.0
+    assert torque["shoulder_pan"] == pytest.approx(0.0, abs=1e-9)  # a vertical axis carries no weight
+    # Nothing else about the command changes: same gains, the arm is where it is asked to be.
+    assert sent["elbow_flex"][3:5] == (45.0, 12.0)
+    assert sent["gripper"][0] == "force_pos"
+
+
+def test_gravity_torque_fades_in_from_the_first_command(follower) -> None:
+    robot, send = follower
+    first = _hold(robot, send, 0.005)
+    assert first["elbow_flex"][5] == 0.0  # no jolt on a resting arm
+    halfway = _hold(robot, send, 0.495)
+    full = _hold(robot, send, 1.0)
+    assert halfway["elbow_flex"][5] == pytest.approx(0.5 * full["elbow_flex"][5], rel=0.02)
+
+
+def test_gravity_compensation_can_be_switched_off(follower) -> None:
+    robot, send = follower
+    robot.config.gravity_compensation = 0.0
+    sent = _hold(robot, send, 1.5)
+    assert all(sent[joint][5] == 0.0 for joint in ARM_JOINTS)
+
+
+def test_gravity_model_matches_the_urdf_reference_values() -> None:
+    """Values computed with pinocchio from Seeed's ReBot_Arm_DM.urdf for the same poses."""
+    from lelab.rebot_gravity import gravity_torques
+
+    rest = gravity_torques([0.0] * 6)
+    assert rest == pytest.approx([0.0, -1.284, -7.183, -1.980, 0.0, 0.0], abs=2e-3)
+    work = gravity_torques([math.radians(WORK_POSE[j]) for j in ARM_JOINTS])
+    assert work == pytest.approx([0.0, 4.344, -5.775, -0.634, -0.463, 0.0], abs=2e-3)
+    # Turning the base changes nothing: its axis is vertical.
+    turned = gravity_torques([1.0, *[math.radians(WORK_POSE[j]) for j in ARM_JOINTS[1:]]])
+    assert turned == pytest.approx(work, abs=1e-9)
+
+
+def test_gravity_compensation_refuses_the_robstride_build() -> None:
+    from lelab.rebot_ff_follower import RebotB601FeedforwardFollowerConfig as Config
+
+    with pytest.raises(ValueError, match="Damiao"):
+        RebotB601FeedforwardFollower(Config(port="can0", id="arm", motor_family="rs"))
 
 
 def test_zero_feedforward_gain_is_lerobots_driver(follower) -> None:

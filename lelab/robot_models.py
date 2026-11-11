@@ -146,26 +146,34 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     REBOT_HIGH_POS_GAINS: _rebot(
         REBOT_HIGH_POS_GAINS, "high position gains", {"control_mode": "pos_vel"}, HIGH_POSITION_KP
     ),
-    # MIT mode: a spring and damper to the target, with LeRobot's gains. It has no
-    # speed limit of its own, so the target is kept within `max_relative_target`
-    # degrees of the arm: the spring cannot wind up when a session starts with the
-    # follower away from the leader's pose.
+    # MIT mode: a spring and damper to the target, with LeRobot's gains, through
+    # LeLab's follower (lelab/rebot_ff_follower.py), which adds the torque that
+    # carries the arm's weight; without it the loaded joints sag several degrees.
+    # MIT mode has no speed limit of its own, so the target is kept within
+    # `max_relative_target` degrees of the arm: the spring cannot wind up when a
+    # session starts with the follower away from the leader's pose.
     #
     # The damper resists every motion, so the follower trails by about kd / kp
     # seconds. For imitation learning that is not a defect to tune away: a soft,
     # well-damped controller turns a policy's action errors into small state
     # errors, and tighter tracking fits the data better but performs worse in
     # closed loop (Bronars, Park, Agrawal, "Tune to Learn", arXiv:2604.02523).
-    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", _REBOT_MIT_OPTIONS, None),
-    # The same, with LeLab's follower also sending the target's velocity
-    # (lelab/rebot_ff_follower.py): the lag goes without either gain going up, which
-    # is what teleoperation wants. It is the tight-tracking regime that paper warns
-    # against for learning, and the velocity is differentiated from the targets, so
-    # a policy's jitter reaches the motors through the damping gain.
+    REBOT_MIT: _rebot(
+        REBOT_MIT,
+        "MIT mode",
+        {**_REBOT_MIT_OPTIONS, "velocity_feedforward": 0.0},
+        None,
+        follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
+    ),
+    # The same, also sending the target's velocity: the lag goes without either
+    # gain going up, which is what teleoperation wants. It is the tight-tracking
+    # regime that paper warns against for learning, and the velocity is
+    # differentiated from the targets, so a policy's jitter reaches the motors
+    # through the damping gain.
     REBOT_MIT_FF: _rebot(
         REBOT_MIT_FF,
         "MIT mode with velocity feed-forward",
-        _REBOT_MIT_OPTIONS,
+        {**_REBOT_MIT_OPTIONS, "velocity_feedforward": 1.0},
         None,
         follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
     ),

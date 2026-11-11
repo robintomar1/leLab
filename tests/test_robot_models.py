@@ -97,8 +97,15 @@ def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
     default, high, mit, mit_ff = (
         get_robot_model(k) for k in (REBOT_DEFAULT, REBOT_HIGH_POS_GAINS, REBOT_MIT, REBOT_MIT_FF)
     )
-    assert mit_ff.follower_options == mit.follower_options  # same controller, plus the feed-forward
-    assert mit_ff.follower_type != mit.follower_type
+    # Same controller and follower; only the velocity feed-forward differs.
+    assert mit_ff.follower_type == mit.follower_type
+    assert {k for k in mit.follower_options if mit.follower_options[k] != mit_ff.follower_options[k]} == {
+        "velocity_feedforward"
+    }
+    assert (
+        mit.follower_options["velocity_feedforward"],
+        mit_ff.follower_options["velocity_feedforward"],
+    ) == (0.0, 1.0)
 
     # Same hardware: same calibration files and dataset robot_type.
     for model in (default, high, mit, mit_ff):
@@ -111,7 +118,8 @@ def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
     modes = [make_follower_config(m, "/dev/ttyACM0", "arm").control_mode.value for m in (default, high, mit)]
     assert modes == ["pos_vel", "pos_vel", "mit"]
     assert follower_cli_args(high) == ["--robot.control_mode=pos_vel"]
-    mode_flag, bound_flag = follower_cli_args(mit)
+    mode_flag, bound_flag, velocity_flag = follower_cli_args(mit)
+    assert velocity_flag == "--robot.velocity_feedforward=0.0"
     assert mode_flag == "--robot.control_mode=mit"
     bounds = json.loads(bound_flag.removeprefix("--robot.max_relative_target="))
     assert bounds["shoulder_lift"] == 20.0
