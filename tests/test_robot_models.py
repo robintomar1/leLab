@@ -119,7 +119,7 @@ def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
     [
         # The default variant writes the factory gains: a raised gain outlives the session that set it.
         (REBOT_DEFAULT, {"shoulder_pan": 54.0, "wrist_roll": 54.0}),
-        (REBOT_HIGH_POS_GAINS, {"shoulder_pan": 800.0, "wrist_roll": 200.0}),
+        (REBOT_HIGH_POS_GAINS, {"shoulder_lift": 180.0, "wrist_flex": 100.0}),
     ],
 )
 def test_prepare_follower_writes_the_variants_gains(key: str, expected: dict, gains_log: list) -> None:
@@ -268,7 +268,7 @@ def test_position_gains_are_written_to_ram_per_motor_and_the_bus_released(
 
     stored = {motor.joint_id: motor.kp for motor in bus.motors}
     # CAN ids 1-3 are the 4340P joints, 4-6 the 4310 wrist; the gripper (7) is not touched.
-    assert stored == {1: 800.0, 2: 800.0, 3: 800.0, 4: 200.0, 5: 200.0, 6: 200.0}
+    assert stored == {1: 270.0, 2: 180.0, 3: 200.0, 4: 100.0, 5: 100.0, 6: 100.0}
     assert {rid for _, rid, _ in bus.writes} == {27}  # only KP_APR
     assert bus.stored_to_flash is False
     assert bus.closed and all(motor.closed for motor in bus.motors)

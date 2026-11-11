@@ -113,7 +113,7 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     # Factory gains: the follower trails the leader by 0.2 s (wrist) to 0.7 s
     # (shoulder, elbow).
     REBOT_DEFAULT: _rebot(REBOT_DEFAULT, "default (factory gains)", "pos_vel", FACTORY_POSITION_KP),
-    # Raised position-loop gains: about 55 ms on every arm joint.
+    # Raised position-loop gains, as far as the whole arm stays stable: roughly half the lag.
     REBOT_HIGH_POS_GAINS: _rebot(REBOT_HIGH_POS_GAINS, "high position gains", "pos_vel", HIGH_POSITION_KP),
     # LeRobot's own default for this arm: a stiff spring to the target with no
     # speed limit, so the follower snaps to the leader's pose when a session starts.

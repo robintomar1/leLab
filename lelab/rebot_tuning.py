@@ -18,11 +18,29 @@ In position-velocity mode a Damiao motor closes the position error with its own
 loop, whose gain is the KP_APR register. At the factory value (54) the follower
 trails a moving target by about 10 / KP_APR seconds on the 4310 wrist motors and
 40 / KP_APR on the 4340P motors (the ratio of their gearboxes): roughly 0.2 s
-and 0.7 s, which is what makes teleoperation feel slow. The gains below bring
-every arm joint to about 55 ms, measured on the arm with a 0.5 Hz sine:
+and 0.7 s, which is what makes teleoperation feel slow.
 
-    4310  (wrist_roll)                KP_APR 200 -> 57 ms
-    4340P (shoulder_pan, elbow_flex)  KP_APR 800 -> 53-57 ms
+Raising the gain shortens that, but only so far. With the whole arm powered,
+shoulder_lift and wrist_flex share a lightly damped mode near 4.4 Hz, and a
+higher gain on any loaded joint feeds it: a joint that tracks cleanly at 800
+when tested alone makes the arm oscillate in teleoperation. Measured with every
+joint powered, in a working pose, nudging one joint at a time:
+
+    joint           oscillation begins at       chosen   lag at 1 Hz
+                    alone    with the set
+    shoulder_pan    > 800       -                270      124 ms
+    shoulder_lift     480      360               180      166 ms
+    elbow_flex        640      360               200      160 ms
+    wrist_flex        200      200               100       96 ms
+    wrist_yaw       > 360       -                100      100 ms
+    wrist_roll      > 360       -                100       96 ms
+
+"alone" has the other joints at the factory gain, "with the set" has them at
+values near the chosen ones. The chosen gains are about half of where the set
+starts to oscillate. At the factory gain the same measurement gives about
+280-320 ms on the shoulder and elbow and 150 ms on the wrist. After a sharp
+step the 4.4 Hz wobble is still visible at these gains and dies out in about
+0.6 s.
 
 The gains are written to the motors' RAM, never to flash: a power cycle brings
 the factory values back. The gripper runs in force-position mode and is left
@@ -45,12 +63,12 @@ _ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wri
 FACTORY_POSITION_KP: dict[str, float] = dict.fromkeys(_ARM_JOINTS, 54.0)
 
 HIGH_POSITION_KP: dict[str, float] = {
-    "shoulder_pan": 800.0,
-    "shoulder_lift": 800.0,
-    "elbow_flex": 800.0,
-    "wrist_flex": 200.0,
-    "wrist_yaw": 200.0,
-    "wrist_roll": 200.0,
+    "shoulder_pan": 270.0,
+    "shoulder_lift": 180.0,
+    "elbow_flex": 200.0,
+    "wrist_flex": 100.0,
+    "wrist_yaw": 100.0,
+    "wrist_roll": 100.0,
 }
 
 
