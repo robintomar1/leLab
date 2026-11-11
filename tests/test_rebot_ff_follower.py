@@ -279,8 +279,16 @@ def test_one_lost_feedback_reply_does_not_end_the_session(follower) -> None:
 
 def test_target_clipping_warnings_are_rate_limited(follower, caplog: pytest.LogCaptureFixture) -> None:
     """A fast move clips the target every cycle; LeRobot's warning for each must not flood the log."""
+    import logging
+
+    from lelab.rebot_ff_follower import _OncePerSecond
+
     robot, send = follower
     rest = dict.fromkeys([*ARM_JOINTS, "gripper"], 0.0)
+    (limiter,) = [
+        f for f in logging.getLogger("lerobot.robots.utils").filters if isinstance(f, _OncePerSecond)
+    ]
+    limiter._last = float("-inf")  # whatever earlier tests logged is not this test's second
     with caplog.at_level("WARNING", logger="lerobot.robots.utils"):
         for _ in range(100):  # half a second with the leader 60 degrees ahead of the arm
             send({**rest, "shoulder_pan": 60.0})
