@@ -40,6 +40,7 @@ from pydantic import BaseModel, field_validator
 from lerobot.utils.device_utils import auto_select_torch_device
 
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
+from .robot_models import DEFAULT_ROBOT_MODEL, RobotModelLiteral, follower_cli_args, get_robot_model
 from .utils.config import setup_follower_calibration_file
 from .utils.devices import follower_lock
 
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 class InferenceRequest(BaseModel):
     follower_port: str
     follower_config: str
+    robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL
     policy_ref: str  # opaque ref returned by /jobs/{id}/checkpoints
     task: str = ""
     cameras: dict[str, dict[str, Any]] = {}
@@ -338,7 +340,8 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
         # .json extension. We need that stripped form for `--robot.id`,
         # because lerobot appends `.json` itself when constructing
         # `calibration_dir / f"{id}.json"`.
-        follower_id = setup_follower_calibration_file(request.follower_config)
+        model = get_robot_model(request.robot_model)
+        follower_id = setup_follower_calibration_file(request.follower_config, model.key)
         policy_path = _resolve_policy_path(request.policy_ref)
 
         cmd = [
@@ -348,9 +351,10 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
             "--strategy.type=base",
             f"--policy.path={policy_path}",
             f"--policy.device={auto_select_torch_device().type}",
-            "--robot.type=so101_follower",
+            f"--robot.type={model.follower_type}",
             f"--robot.port={request.follower_port}",
             f"--robot.id={follower_id}",
+            *follower_cli_args(model),
             # JSON-quoted: draccus decodes a string as YAML, so "step 1: grab it" became a dict.
             f"--task={json.dumps(request.task)}",
             f"--duration={request.duration_s}",

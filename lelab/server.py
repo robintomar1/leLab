@@ -68,6 +68,7 @@ from .replay import (
     handle_start_replay,
     handle_stop_replay,
 )
+from .robot_models import DEFAULT_ROBOT_MODEL, ROBOT_MODELS, RobotModelLiteral
 from .rollout import (
     InferenceRequest,
     handle_inference_status,
@@ -89,8 +90,7 @@ from .train import TrainingRequest
 from .update import handle_run_update, handle_update_check
 from .utils import config
 from .utils.config import (
-    FOLLOWER_CONFIG_PATH,
-    LEADER_CONFIG_PATH,
+    calibration_dirs,
     delete_robot_record,
     detect_port_after_disconnect,
     find_available_ports,
@@ -345,10 +345,11 @@ job_registry.set_on_progress(manager.notify_job_progress)
 
 
 @app.get("/get-configs")
-def get_configs():
+def get_configs(robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL):
     # Get all available calibration configs
-    leader_configs = [os.path.basename(f) for f in glob.glob(os.path.join(LEADER_CONFIG_PATH, "*.json"))]
-    follower_configs = [os.path.basename(f) for f in glob.glob(os.path.join(FOLLOWER_CONFIG_PATH, "*.json"))]
+    leader_dir, follower_dir = calibration_dirs(robot_model)
+    leader_configs = [os.path.basename(f) for f in glob.glob(os.path.join(leader_dir, "*.json"))]
+    follower_configs = [os.path.basename(f) for f in glob.glob(os.path.join(follower_dir, "*.json"))]
 
     return {"leader_configs": leader_configs, "follower_configs": follower_configs}
 
@@ -1000,13 +1001,14 @@ def complete_calibration_step():
 
 
 @app.get("/calibration-configs/{device_type}")
-def get_calibration_configs(device_type: str):
+def get_calibration_configs(device_type: str, robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL):
     """Get all calibration config files for a specific device type"""
     try:
+        leader_dir, follower_dir = calibration_dirs(robot_model)
         if device_type == "robot":
-            config_path = FOLLOWER_CONFIG_PATH
+            config_path = follower_dir
         elif device_type == "teleop":
-            config_path = LEADER_CONFIG_PATH
+            config_path = leader_dir
         else:
             return {"success": False, "message": "Invalid device type"}
 
@@ -1037,13 +1039,16 @@ def get_calibration_configs(device_type: str):
 
 
 @app.delete("/calibration-configs/{device_type}/{config_name}")
-def delete_calibration_config(device_type: str, config_name: str):
+def delete_calibration_config(
+    device_type: str, config_name: str, robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL
+):
     """Delete a calibration config file"""
     try:
+        leader_dir, follower_dir = calibration_dirs(robot_model)
         if device_type == "robot":
-            config_path = FOLLOWER_CONFIG_PATH
+            config_path = follower_dir
         elif device_type == "teleop":
-            config_path = LEADER_CONFIG_PATH
+            config_path = leader_dir
         else:
             return {"success": False, "message": "Invalid device type"}
 
@@ -1354,6 +1359,25 @@ def get_robot_config(robot_type: RobotSideLiteral, available_configs: str = ""):
 # Robot config records (named robots)
 
 
+@app.get("/robot-models")
+def get_robot_models():
+    """The leader/follower arm pairs a robot record can be set to."""
+    return {
+        "status": "success",
+        "default": DEFAULT_ROBOT_MODEL,
+        "models": [
+            {
+                "key": m.key,
+                "label": m.label,
+                "calibration": m.calibration,
+                "has_urdf": m.urdf_joints is not None,
+                "dataset_robot_type": m.follower_name,
+            }
+            for m in ROBOT_MODELS.values()
+        ],
+    }
+
+
 def _record_with_clean(record: dict) -> dict:
     """Attach `is_clean` to a record for API responses."""
     return {**record, "is_clean": is_robot_record_clean(record)}
@@ -1394,6 +1418,8 @@ def upsert_robot(name: str, data: dict, create: bool = False):
     """
     if not is_valid_robot_name(name):
         return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid robot name"})
+    if data and "robot_model" in data and data["robot_model"] not in ROBOT_MODELS:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Unknown robot model"})
     try:
         if create:
             if get_robot_record(name) is not None:

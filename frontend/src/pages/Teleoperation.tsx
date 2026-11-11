@@ -4,11 +4,16 @@ import VisualizerPanel from "@/components/control/VisualizerPanel";
 import TeleopCameraPanel from "@/components/control/TeleopCameraPanel";
 import { useToast } from "@/hooks/use-toast";
 import { useApi } from "@/contexts/ApiContext";
+import { useRobots } from "@/hooks/useRobots";
+import { robotModelInfo } from "@/lib/robotModels";
 
 const TeleoperationPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { baseUrl, fetchWithHeaders } = useApi();
+  // Teleoperation is started for the selected robot.
+  const { selectedRecord } = useRobots();
+  const modelInfo = robotModelInfo(selectedRecord?.robot_model);
 
   // Stop teleoperation exactly once, however the user leaves, so the back
   // button, an in-app link, and the unmount safety net can't double-stop or
@@ -74,6 +79,7 @@ const TeleoperationPage = () => {
           onGoBack={handleGoBack}
           className="lg:w-full"
           rightSlot={<TeleopCameraPanel />}
+          noModelFor={modelInfo.hasUrdf ? undefined : modelInfo.label}
         />
       </div>
     </div>

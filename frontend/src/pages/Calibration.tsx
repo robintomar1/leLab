@@ -43,12 +43,14 @@ import { useApi } from "@/contexts/ApiContext";
 import { isMotorRangeComplete } from "@/lib/calibrationTargets";
 import CameraConfiguration from "@/components/recording/CameraConfiguration";
 import { CameraConfig, loadCameraConfigs, cameraConfigurationError } from "@/lib/cameraConfig";
+import { ROBOT_MODELS, RobotModelKey, robotModelInfo } from "@/lib/robotModels";
 
 const DISCONTINUITY_ERROR_PREFIX = "Motor discontinuity detected";
 
 interface CalibrationStatus {
   calibration_active: boolean;
-  status: string; // "idle", "connecting", "recording", "completed", "error", "stopping"
+  // "idle", "connecting", "recording", "awaiting_zero", "completed", "error", "stopping"
+  status: string;
   device_type: string | null;
   error: string | null;
   message: string;
@@ -66,10 +68,12 @@ interface CalibrationRequest {
   port: string;
   config_file: string;
   robot_name: string | null;
+  robot_model: RobotModelKey;
 }
 
 interface RobotRecord {
   name: string;
+  robot_model: RobotModelKey;
   leader_port: string;
   follower_port: string;
   leader_config: string;
@@ -93,6 +97,8 @@ const Calibration = () => {
   const [port, setPort] = useState<string>("");
   const [robot, setRobot] = useState<RobotRecord | null>(null);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
+  const modelInfo = robotModelInfo(robot?.robot_model);
+  const robotModel = modelInfo.key;
   // Off by default so merely opening the calibration page never grabs a camera.
   // The user explicitly starts a scan, which is when cameras are turned on,
   // enumerated, and the browser permission prompt is requested.
@@ -262,6 +268,7 @@ const Calibration = () => {
       port: port,
       config_file: robotName,
       robot_name: robotName,
+      robot_model: robotModel,
     };
 
     // Optimistically mark as active so the unmount cleanup will fire even if
@@ -494,7 +501,9 @@ const Calibration = () => {
   const [existingConfigs, setExistingConfigs] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
-    fetchWithHeaders(`${baseUrl}/calibration-configs/${deviceType}`)
+    fetchWithHeaders(
+      `${baseUrl}/calibration-configs/${deviceType}?robot_model=${robotModel}`
+    )
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
@@ -508,7 +517,32 @@ const Calibration = () => {
       cancelled = true;
     };
     // Re-list when a calibration ends, so a newly written file shows up.
-  }, [deviceType, baseUrl, fetchWithHeaders, calibrationStatus.calibration_active]);
+  }, [deviceType, robotModel, baseUrl, fetchWithHeaders, calibrationStatus.calibration_active]);
+
+  // Calibration files belong to a model, so the backend unlinks this robot's
+  // files when its model changes.
+  const handleRobotModelChange = async (next: string) => {
+    if (!robotName || next === robotModel) return;
+    try {
+      const res = await fetchWithHeaders(
+        `${baseUrl}/robots/${encodeURIComponent(robotName)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_model: next }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.robot) throw new Error(data.message || `HTTP ${res.status}`);
+      setRobot(data.robot);
+    } catch (e) {
+      toast({
+        title: "Could not change the robot model",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  };
 
   const configField = deviceType === "robot" ? "follower_config" : "leader_config";
 
@@ -567,6 +601,12 @@ const Calibration = () => {
           color: "bg-purple-500",
           icon: <Activity className="w-4 h-4" />,
           text: "Recording Ranges",
+        };
+      case "awaiting_zero":
+        return {
+          color: "bg-purple-500",
+          icon: <Activity className="w-4 h-4" />,
+          text: "Waiting for zero position",
         };
       case "completed":
         return {
@@ -637,6 +677,35 @@ const Calibration = () => {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label
+                  htmlFor="robotModel"
+                  className="text-sm font-medium text-slate-300"
+                >
+                  Robot Model *
+                </Label>
+                <Select
+                  value={robotModel}
+                  onValueChange={handleRobotModelChange}
+                  disabled={!robot || calibrationStatus.calibration_active}
+                >
+                  <SelectTrigger
+                    id="robotModel"
+                    aria-label="Robot model"
+                    className="bg-slate-700 border-slate-600 text-white rounded-md"
+                  >
+                    <SelectValue placeholder="Select robot model" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700 text-white">
+                    {Object.values(ROBOT_MODELS).map((m) => (
+                      <SelectItem key={m.key} value={m.key} className="hover:bg-slate-700">
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="space-y-2">
                 <Label
                   htmlFor="deviceType"
@@ -711,7 +780,10 @@ const Calibration = () => {
                 )}
                 {!calibrationStatus.calibration_active &&
                   existingConfigs.length > 0 && (
-                    <Collapsible>
+                    <Collapsible
+                      key={robotModel}
+                      defaultOpen={modelInfo.calibration === "zero"}
+                    >
                       <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white transition-colors">
                         <ChevronRight className="w-3.5 h-3.5 transition-transform group-data-[state=open]:rotate-90" />
                         Advanced
@@ -945,6 +1017,30 @@ const Calibration = () => {
                 );
               })()}
 
+              {calibrationStatus.status === "awaiting_zero" && (
+                <div className="space-y-3">
+                  <Alert className="bg-purple-900/50 border-purple-700 text-purple-200">
+                    <Activity className="h-4 w-4" />
+                    <AlertDescription>
+                      <strong>Torque is off.</strong> Move the arm by hand to
+                      its zero position and close the gripper, then set the
+                      zero position. This overwrites the zero stored in the
+                      motors.
+                    </AlertDescription>
+                  </Alert>
+                  <div className="flex justify-center">
+                    <Button
+                      onClick={handleCompleteStep}
+                      disabled={!calibrationStatus.calibration_active}
+                      className="px-8 py-3 rounded-full bg-green-600 hover:bg-green-700"
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      Set Zero Position
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {calibrationStatus.status === "completed" && (
                 <Alert className="bg-green-900/50 border-green-700 text-green-200">
                   <CheckCircle className="h-4 w-4" />
@@ -982,39 +1078,57 @@ const Calibration = () => {
                   </Alert>
                 ))}
 
-              <div
-                ref={demoVideoRef}
-                className="bg-slate-900/50 p-4 rounded-lg border border-slate-700"
-              >
-                <h4 className="font-semibold mb-3 text-slate-200">
-                  Calibration Demo:
-                </h4>
-                <div className="relative rounded-lg overflow-hidden bg-slate-800">
-                  <video
-                    className="w-full h-auto rounded-md"
-                    controls
-                    preload="auto"
-                    muted
-                  >
-                    <source
-                      src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/lerobot/calibrate_so101_2.mp4"
-                      type="video/mp4"
-                    />
-                    <p className="text-slate-400 text-sm text-center py-4">
-                      Your browser does not support the video tag.
-                      <br />
-                      <a
-                        href="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/lerobot/calibrate_so101_2.mp4"
-                        className="text-blue-400 hover:text-blue-300 underline"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Click here to view the calibration video
-                      </a>
-                    </p>
-                  </video>
+              {modelInfo.calibration === "zero" ? (
+                <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700 text-sm text-slate-300 space-y-2">
+                  <h4 className="font-semibold text-slate-200">
+                    Zero-position calibration
+                  </h4>
+                  <p>
+                    This arm stores its zero position in the motors. Calibrating
+                    turns torque off, lets you pose the arm at its zero position
+                    with the gripper closed, and saves that pose as zero.
+                  </p>
+                  <p>
+                    If the arm was already zeroed with LeRobot, link its
+                    calibration file under Advanced instead of calibrating
+                    again.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div
+                  ref={demoVideoRef}
+                  className="bg-slate-900/50 p-4 rounded-lg border border-slate-700"
+                >
+                  <h4 className="font-semibold mb-3 text-slate-200">
+                    Calibration Demo:
+                  </h4>
+                  <div className="relative rounded-lg overflow-hidden bg-slate-800">
+                    <video
+                      className="w-full h-auto rounded-md"
+                      controls
+                      preload="auto"
+                      muted
+                    >
+                      <source
+                        src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/lerobot/calibrate_so101_2.mp4"
+                        type="video/mp4"
+                      />
+                      <p className="text-slate-400 text-sm text-center py-4">
+                        Your browser does not support the video tag.
+                        <br />
+                        <a
+                          href="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/lerobot/calibrate_so101_2.mp4"
+                          className="text-blue-400 hover:text-blue-300 underline"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Click here to view the calibration video
+                        </a>
+                      </p>
+                    </video>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

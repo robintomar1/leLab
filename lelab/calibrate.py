@@ -25,6 +25,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
+from unittest import mock
 
 from lerobot.motors import MotorCalibration
 from lerobot.robots import (
@@ -37,6 +38,13 @@ from lerobot.teleoperators import (
 )
 from lerobot.utils.utils import init_logging
 
+from .robot_models import (
+    DEFAULT_ROBOT_MODEL,
+    RobotModel,
+    get_robot_model,
+    make_follower_config,
+    make_leader_config,
+)
 from .utils.config import is_valid_robot_name
 from .utils.devices import safe_disconnect_device
 
@@ -80,7 +88,8 @@ class CalibrationStatus:
     """Status information for calibration process"""
 
     calibration_active: bool = False
-    status: str = "idle"  # "idle", "connecting", "recording", "completed", "error", "stopping"
+    # "idle", "connecting", "recording", "awaiting_zero", "completed", "error", "stopping"
+    status: str = "idle"
     device_type: str | None = None
     error: str | None = None
     message: str = ""
@@ -98,6 +107,7 @@ class CalibrationRequest:
     port: str
     config_file: str
     robot_name: str | None = None  # When set, write port + config back into the robot record on success
+    robot_model: str = DEFAULT_ROBOT_MODEL
 
 
 class CalibrationManager:
@@ -161,6 +171,10 @@ class CalibrationManager:
             # Same guard as the calibration-config delete endpoint and robot records.
             if not is_valid_robot_name(request.config_file):
                 return {"success": False, "message": "Invalid configuration name"}
+            try:
+                get_robot_model(request.robot_model)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
 
             if self.status.calibration_active:
                 return {"success": False, "message": "Calibration already active"}
@@ -212,6 +226,10 @@ class CalibrationManager:
                 self._step_complete.set()
                 return {"success": True, "message": "Range recording completed"}
 
+            elif self.status.status == "awaiting_zero":
+                self._step_complete.set()
+                return {"success": True, "message": "Zero position set"}
+
             else:
                 return {"success": False, "message": f"Cannot complete step in status: {self.status.status}"}
 
@@ -257,15 +275,13 @@ class CalibrationManager:
         try:
             logger.info(f"Starting calibration worker for {request.device_type}")
 
+            model = get_robot_model(request.robot_model)
+
             # Create device configuration
             if request.device_type == "robot":
-                from lerobot.robots.so_follower import SO101FollowerConfig
-
-                config = SO101FollowerConfig(port=request.port, id=request.config_file)
+                config = make_follower_config(model, request.port, request.config_file)
             elif request.device_type == "teleop":
-                from lerobot.teleoperators.so_leader import SO101LeaderConfig
-
-                config = SO101LeaderConfig(port=request.port, id=request.config_file)
+                config = make_leader_config(model, request.port, request.config_file)
             else:
                 raise ValueError(f"Unknown device type: {request.device_type}")
 
@@ -285,24 +301,34 @@ class CalibrationManager:
                 self._cleanup_and_finish("Calibration cancelled")
                 return
 
-            # Start Step 1: Homing
-            self._step_homing()
+            if model.calibration == "zero":
+                self._step_zero_position(model)
 
-            if self.stop_calibration:
-                logger.info("Calibration stopped after homing step")
-                self._cleanup_and_finish("Calibration cancelled")
-                return
+                if self.stop_calibration:
+                    logger.info("Calibration stopped before the zero position was set")
+                    self._cleanup_and_finish("Calibration cancelled")
+                    return
+            else:
+                # Start Step 1: Homing
+                self._step_homing()
 
-            # Start Step 2: Range Recording
-            self._step_range_recording()
+                if self.stop_calibration:
+                    logger.info("Calibration stopped after homing step")
+                    self._cleanup_and_finish("Calibration cancelled")
+                    return
 
-            if self.stop_calibration:
-                logger.info("Calibration stopped after recording step")
-                self._cleanup_and_finish("Calibration cancelled")
-                return
+                # Start Step 2: Range Recording
+                self._step_range_recording()
 
-            # Complete calibration
-            self._complete_calibration()
+                if self.stop_calibration:
+                    logger.info("Calibration stopped after recording step")
+                    self._cleanup_and_finish("Calibration cancelled")
+                    return
+
+                # Complete calibration
+                self._complete_calibration()
+
+            self._write_back_robot_record()
 
             logger.info("Calibration completed successfully")
             self._cleanup_and_finish("Calibration completed successfully", status="completed")
@@ -323,6 +349,31 @@ class CalibrationManager:
                     "Worker thread ending but calibration still marked as active - forcing cleanup"
                 )
                 self._cleanup_and_finish("Calibration stopped", status="idle")
+
+    def _step_zero_position(self, model: RobotModel):
+        """Wait for the user to pose the arm at its zero position, then have the motors store it."""
+        # connect() leaves a follower's torque on; the arm has to be posed by hand.
+        # A leader is unlocked by its own configure().
+        if hasattr(self.device, "disable_torque"):
+            self.device.disable_torque()
+
+        self._update_status(
+            status="awaiting_zero",
+            step=1,
+            message=f"Move the {model.label} arm to its zero position and close the gripper, "
+            "then set the zero position.",
+        )
+        self._step_complete.wait()
+        if self.stop_calibration:
+            return
+
+        # The driver's own calibrate() sets the zero and writes the calibration file,
+        # but it is written for a terminal: it asks whether to recalibrate, then waits
+        # for ENTER. The user has already answered both in the browser.
+        with mock.patch("builtins.input", return_value="c"):
+            self.device.calibrate()
+        self._step_complete.clear()
+        logger.info(f"Calibration saved to {self.device.calibration_fpath}")
 
     def _step_homing(self):
         """Auto-capture homing offsets from the device's current position."""
@@ -492,8 +543,9 @@ class CalibrationManager:
 
         logger.info(f"Calibration saved to {self.device.calibration_fpath}")
 
-        # Robot-record write-back: if this calibration was launched from a tile,
-        # update the robot's port + config field for the side that was just calibrated.
+    def _write_back_robot_record(self):
+        """If this calibration was launched from a tile, update the robot's
+        port + config field for the side that was just calibrated."""
         request = self._current_request
         if request is not None and request.robot_name:
             from .utils.config import save_robot_record

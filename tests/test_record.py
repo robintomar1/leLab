@@ -270,7 +270,9 @@ def test_create_record_config_pins_dshow_on_windows(monkeypatch: pytest.MonkeyPa
     from lerobot.cameras.configs import Cv2Backends
 
     monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr(record, "setup_calibration_files", lambda leader, follower: ("leader", "follower"))
+    monkeypatch.setattr(
+        record, "setup_calibration_files", lambda leader, follower, robot_model=None: ("leader", "follower")
+    )
 
     request = record.RecordingRequest(
         leader_port="COM_LEADER",
@@ -381,7 +383,9 @@ def test_resume_reopens_the_dataset_in_the_local_cache(
     from lerobot.datasets import LeRobotDataset
 
     _record("local/ds")
-    monkeypatch.setattr(record, "setup_calibration_files", lambda leader, follower: ("leader", "follower"))
+    monkeypatch.setattr(
+        record, "setup_calibration_files", lambda leader, follower, robot_model=None: ("leader", "follower")
+    )
 
     config = record.create_record_config(_resume_request("local/ds"))
     dataset = LeRobotDataset.resume(config.dataset.repo_id, root=config.dataset.root)

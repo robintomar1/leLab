@@ -37,6 +37,7 @@ const calibrated: RobotRecord = {
   name: "arm",
   leader_port: "/dev/leader",
   follower_port: "/dev/follower",
+  robot_model: "so101" as const,
   leader_config: "leader.json",
   follower_config: "follower.json",
   cameras: [],

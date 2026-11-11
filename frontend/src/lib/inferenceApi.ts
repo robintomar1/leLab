@@ -1,9 +1,11 @@
 import { Fetcher, apiRequest } from "./apiClient";
 import { CameraRequest } from "./cameraConfig";
+import { RobotModelKey } from "./robotModels";
 
 export interface StartInferenceRequest {
   follower_port: string;
   follower_config: string;
+  robot_model: RobotModelKey;
   policy_ref: string;
   task: string;
   cameras: Record<string, CameraRequest>;

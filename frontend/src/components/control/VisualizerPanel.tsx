@@ -10,12 +10,15 @@ interface VisualizerPanelProps {
   className?: string;
   /** Optional content rendered as a column beside the 3D viewer (e.g. a camera panel). */
   rightSlot?: React.ReactNode;
+  /** Label of the arm being driven when the 3D viewer has no model of it. */
+  noModelFor?: string;
 }
 
 const VisualizerPanel: React.FC<VisualizerPanelProps> = ({
   onGoBack,
   className,
   rightSlot,
+  noModelFor,
 }) => {
   return (
     <div
@@ -39,7 +42,13 @@ const VisualizerPanel: React.FC<VisualizerPanelProps> = ({
           <h2 className="text-xl font-medium text-gray-200">Teleoperation</h2>
         </div>
         <div className="flex-1 bg-black rounded border border-gray-800 min-h-[50vh] lg:min-h-0">
-          <UrdfViewer />
+          {noModelFor ? (
+            <div className="h-full flex items-center justify-center p-6 text-center text-sm text-gray-400">
+              Teleoperation is running. There is no 3D model of the {noModelFor} yet.
+            </div>
+          ) : (
+            <UrdfViewer />
+          )}
         </div>
       </div>
       {rightSlot && (

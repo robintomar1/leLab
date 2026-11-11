@@ -1,0 +1,265 @@
+# Copyright 2026 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The leader/follower arm pairs LeLab can drive.
+
+Each feature module (teleoperation, recording, replay, calibration, rollout)
+asks this module for the LeRobot configs and devices of the robot model named
+in the request, and for how to bring them up, so none of them names a
+hardware class itself.
+
+LeRobot is imported inside the functions: this module is imported by
+`utils/config.py`, which must stay cheap, and the reBot drivers need the
+optional `rebot` extra.
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
+
+SO101 = "so101"
+REBOT_B601 = "rebot_b601"
+DEFAULT_ROBOT_MODEL = SO101
+
+RobotModelLiteral = Literal["so101", "rebot_b601"]
+
+
+@dataclass(frozen=True)
+class RobotModel:
+    key: str
+    label: str
+    # `--robot.type` / `--teleop.type` names LeRobot registers the configs under.
+    follower_type: str
+    leader_type: str
+    # `Robot.name` / `Teleoperator.name`: the calibration sub-directory LeRobot reads,
+    # and the `robot_type` it stamps on datasets.
+    follower_name: str
+    leader_name: str
+    # "range": record each joint's range of motion (Feetech).
+    # "zero": pose the arm at its zero position, which the motors then store.
+    calibration: Literal["range", "zero"]
+    # Motor name -> joint name in the URDF the frontend renders, when there is one.
+    urdf_joints: dict[str, str] | None
+    # pip extra of LeLab that installs the drivers, when they are optional.
+    extra: str | None = None
+
+
+ROBOT_MODELS: dict[str, RobotModel] = {
+    SO101: RobotModel(
+        key=SO101,
+        label="SO-101",
+        follower_type="so101_follower",
+        leader_type="so101_leader",
+        follower_name="so_follower",
+        leader_name="so_leader",
+        calibration="range",
+        urdf_joints={
+            "shoulder_pan": "Rotation",
+            "shoulder_lift": "Pitch",
+            "elbow_flex": "Elbow",
+            "wrist_flex": "Wrist_Pitch",
+            "wrist_roll": "Wrist_Roll",
+            "gripper": "Jaw",
+        },
+    ),
+    REBOT_B601: RobotModel(
+        key=REBOT_B601,
+        label="reBot B601 (Damiao) + reBot Arm 102 leader",
+        follower_type="rebot_b601_follower",
+        leader_type="rebot_102_leader",
+        follower_name="rebot_b601_follower",
+        leader_name="rebot_102_leader",
+        calibration="zero",
+        urdf_joints=None,
+        extra="rebot",
+    ),
+}
+
+# The B601 is driven in position-velocity mode rather than LeRobot's default MIT
+# mode. LeLab starts teleoperation and replay from a button, with the follower
+# wherever it was left: MIT mode answers that initial error with a torque
+# proportional to it, while position-velocity mode closes it at a bounded speed
+# (the motor profile's `pos_vel_velocity`).
+_REBOT_FOLLOWER_OPTIONS: dict[str, Any] = {"control_mode": "pos_vel"}
+
+
+def get_robot_model(key: str | None) -> RobotModel:
+    """The model registered under `key` (the default model for None or "")."""
+    model = ROBOT_MODELS.get(key or DEFAULT_ROBOT_MODEL)
+    if model is None:
+        raise ValueError(f"Unknown robot model {key!r}. Known models: {', '.join(ROBOT_MODELS)}")
+    return model
+
+
+def is_robot_model(key: Any) -> bool:
+    return isinstance(key, str) and key in ROBOT_MODELS
+
+
+def model_for_follower(robot) -> RobotModel:
+    """The model a LeRobot follower device belongs to."""
+    for model in ROBOT_MODELS.values():
+        if model.follower_name == robot.name:
+            return model
+    raise ValueError(f"No robot model drives a {robot.name!r} follower")
+
+
+def follower_cli_args(model: RobotModel) -> list[str]:
+    """`--robot.*` flags, besides type/port/id/cameras, that LeRobot's CLIs need for this follower."""
+    if model.key == REBOT_B601:
+        return [f"--robot.{name}={value}" for name, value in _REBOT_FOLLOWER_OPTIONS.items()]
+    return []
+
+
+def _missing_extra(model: RobotModel, error: ImportError) -> ImportError:
+    return ImportError(
+        f"The {model.label} drivers are not installed ({error}). "
+        f'Install them with: pip install "lelab[{model.extra}]"'
+    )
+
+
+def make_follower_config(model: RobotModel, port: str, device_id: str, cameras: dict | None = None):
+    cameras = cameras or {}
+    if model.key == SO101:
+        from lerobot.robots.so_follower import SO101FollowerConfig
+
+        return SO101FollowerConfig(port=port, id=device_id, cameras=cameras)
+    if model.key == REBOT_B601:
+        from lerobot.robots.rebot_b601_follower import RebotB601FollowerRobotConfig
+
+        return RebotB601FollowerRobotConfig(
+            port=port, id=device_id, cameras=cameras, **_REBOT_FOLLOWER_OPTIONS
+        )
+    raise ValueError(f"Unknown robot model {model.key!r}")
+
+
+def make_leader_config(model: RobotModel, port: str, device_id: str):
+    if model.key == SO101:
+        from lerobot.teleoperators.so_leader import SO101LeaderConfig
+
+        return SO101LeaderConfig(port=port, id=device_id)
+    if model.key == REBOT_B601:
+        from lerobot.teleoperators.rebot_102_leader import RebotArm102LeaderTeleopConfig
+
+        return RebotArm102LeaderTeleopConfig(port=port, id=device_id)
+    raise ValueError(f"Unknown robot model {model.key!r}")
+
+
+def make_follower(model: RobotModel, port: str, device_id: str, cameras: dict | None = None):
+    """An unconnected follower arm."""
+    from lerobot.robots import make_robot_from_config
+
+    try:
+        return make_robot_from_config(make_follower_config(model, port, device_id, cameras))
+    except ImportError as e:
+        if model.extra is None:
+            raise
+        raise _missing_extra(model, e) from e
+
+
+def make_leader(model: RobotModel, port: str, device_id: str):
+    """An unconnected leader arm."""
+    from lerobot.teleoperators import make_teleoperator_from_config
+
+    try:
+        return make_teleoperator_from_config(make_leader_config(model, port, device_id))
+    except ImportError as e:
+        if model.extra is None:
+            raise
+        raise _missing_extra(model, e) from e
+
+
+def _connection_error(side: str, port: str | None, cause: Exception) -> RuntimeError:
+    where = f" on {port}" if port else ""
+    logger.error(f"{side.capitalize()} arm connection failed: {cause}")
+    return RuntimeError(
+        f"Could not connect to the {side} arm{where}. "
+        "Make sure it's plugged in and powered on, then try again."
+    )
+
+
+def connect_arms(
+    model: RobotModel,
+    robot,
+    teleop=None,
+    *,
+    follower_port: str | None = None,
+    leader_port: str | None = None,
+) -> None:
+    """Bring up the follower, and the leader when there is one, ready to be driven.
+
+    A connection failure is raised as a RuntimeError naming the arm and its
+    port. The caller owns the cleanup: on any error, disconnect both devices.
+    """
+    if model.calibration == "range":
+        _connect_feetech_arms(robot, teleop, follower_port, leader_port)
+    else:
+        _connect_zeroed_arms(robot, teleop, follower_port, leader_port)
+
+
+def _connect_feetech_arms(robot, teleop, follower_port, leader_port) -> None:
+    # `robot.connect()` can't be used here. It prompts on stdin when the motors
+    # disagree with the calibration file (EOFError under the server), and it
+    # ends with configure(), which leaves torque enabled — writing the
+    # calibration registers afterwards corrupts the bus a few seconds in.
+    logger.info("Connecting to follower arm...")
+    try:
+        robot.bus.connect()
+    except Exception as e:
+        raise _connection_error("follower", follower_port, e) from e
+
+    if teleop is not None:
+        logger.info("Connecting to leader arm...")
+        try:
+            teleop.bus.connect()
+        except Exception as e:
+            raise _connection_error("leader", leader_port, e) from e
+
+    # Feetech motors only store calibration registers with the torque off,
+    # which also opens their EEPROM lock.
+    logger.info("Writing calibration to motors...")
+    robot.bus.disable_torque()
+    robot.bus.write_calibration(robot.calibration)
+    if teleop is not None:
+        teleop.bus.disable_torque()
+        teleop.bus.write_calibration(teleop.calibration)
+
+    logger.info("Connecting cameras and configuring motors...")
+    for cam in robot.cameras.values():
+        cam.connect()
+    robot.configure()
+    if teleop is not None:
+        teleop.configure()
+
+
+def _connect_zeroed_arms(robot, teleop, follower_port, leader_port) -> None:
+    # These arms keep their zero in the motors, so there is nothing to write:
+    # the calibration file only records that the zero was set. `calibrate=False`
+    # keeps connect() from prompting on stdin.
+    #
+    # The leader goes first. Connecting the follower enables its torque, and a
+    # leader that then fails to connect would have us release a powered arm.
+    if teleop is not None:
+        logger.info("Connecting to leader arm...")
+        try:
+            teleop.connect(calibrate=False)
+        except Exception as e:
+            raise _connection_error("leader", leader_port, e) from e
+
+    logger.info("Connecting to follower arm...")
+    try:
+        robot.connect(calibrate=False)
+    except Exception as e:
+        raise _connection_error("follower", follower_port, e) from e

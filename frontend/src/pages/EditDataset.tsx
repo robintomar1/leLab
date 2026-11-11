@@ -30,10 +30,8 @@ import { useRobots } from "@/hooks/useRobots";
 import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/datasetApi";
 import { openHubViewer } from "@/lib/hubViewer";
+import { robotModelInfo } from "@/lib/robotModels";
 import { DatasetItem, MoveDestination, mergeLocalDatasets, getEpisodeTaskStatus, moveEpisodes, setEpisodeTask } from "@/lib/replayApi";
-
-// The robot_type LeRobot stores for the SO-101 follower.
-const FOLLOWER_ROBOT_TYPE = "so_follower";
 
 const Stat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <span className="flex items-baseline gap-1.5">
@@ -82,9 +80,10 @@ const EditDataset = () => {
   const { selectedRecord } = useRobots();
   const recording = useRecording(selectedRecord);
   // LeRobot only appends episodes recorded with the same robot at the same fps,
-  // and LeLab records with the SO-101 follower.
+  // and LeLab records with the selected robot's follower.
+  const followerRobotType = robotModelInfo(selectedRecord?.robot_model).datasetRobotType;
   const appendTarget =
-    repoId && data?.success && data.fps && data.robot_type === FOLLOWER_ROBOT_TYPE
+    repoId && data?.success && data.fps && data.robot_type === followerRobotType
       ? {
           repoId,
           numEpisodes: data.total_episodes,

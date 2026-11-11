@@ -3,9 +3,11 @@ import { useLocation } from "react-router-dom";
 import { useApi } from "@/contexts/ApiContext";
 import { useToast } from "@/hooks/use-toast";
 import { CameraConfig, cameraConfigurationError, loadCameraConfigs } from "@/lib/cameraConfig";
+import { RobotModelKey } from "@/lib/robotModels";
 
 export interface RobotRecord {
   name: string;
+  robot_model: RobotModelKey;
   leader_port: string;
   follower_port: string;
   leader_config: string;

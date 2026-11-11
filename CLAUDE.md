@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository purpose
 
-LeLab is a FastAPI + React web interface wrapping the [LeRobot](https://github.com/huggingface/lerobot) framework for the SO-101 leader/follower arm. It exposes teleoperation, dataset recording, calibration, replay, and training as HTTP/WebSocket endpoints, replacing LeRobot's CLI + keyboard-driven flows.
+LeLab is a FastAPI + React web interface wrapping the [LeRobot](https://github.com/huggingface/lerobot) framework for leader/follower arms: the SO-101, and the reBot B601 follower with its reBot Arm 102 leader. It exposes teleoperation, dataset recording, calibration, replay, and training as HTTP/WebSocket endpoints, replacing LeRobot's CLI + keyboard-driven flows.
 
 The frontend (React + Vite) lives in [`frontend/`](frontend/). The bundle in `frontend/dist/` is not committed: [setup.py](setup.py) builds it while building the wheel, with Node from the `nodejs-wheel-binaries` build requirement, and ships it as package data (`frontend.__init__.py` makes setuptools treat it as a package); [`lelab/server.py`](lelab/server.py) mounts it as `StaticFiles` at `/` so a single `lelab` process serves both API and UI on `:8000`. The `frontend/` directory is also force-pushed to the [LeLab HF Space](https://huggingface.co/spaces/lerobot/LeLab) by [`.github/workflows/sync_space.yml`](.github/workflows/sync_space.yml) — that's a separate runtime; the Space builds the [Dockerfile](frontend/Dockerfile) (which runs `npm run build` itself).
 
@@ -36,9 +36,10 @@ Run the Python tests with `pytest` (config in [pyproject.toml](pyproject.toml); 
 [server.py](lelab/server.py) is a thin FastAPI router. Each feature lives in its own module that owns its global state and exposes `handle_*` functions plus a Pydantic request model:
 
 - [record.py](lelab/record.py): dataset recording around LeRobot's `record_loop`; frontend buttons set the same `events` dict LeRobot's keyboard listener would. The worker is a daemon thread, so the server's shutdown hook calls `stop_recording_and_wait()` to let an active session finalize on Ctrl+C.
-- [teleoperate.py](lelab/teleoperate.py): leader→follower teleoperation loop over LeRobot's SO-101 leader and follower.
+- [robot_models.py](lelab/robot_models.py): the registry of arm pairs LeLab drives. It builds each model's LeRobot configs and devices and knows how to bring them up (`connect_arms`); the feature modules below go through it and never name a hardware class.
+- [teleoperate.py](lelab/teleoperate.py): leader→follower teleoperation loop over the selected robot model's leader and follower.
 - [replay.py](lelab/replay.py): plays a recorded episode's actions on the follower arm, an in-process take on `lerobot-replay` so the dataset browser can stop it.
-- [calibrate.py](lelab/calibrate.py) — step-by-step web calibration with a `CalibrationManager` singleton and `_step_complete` threading.Event.
+- [calibrate.py](lelab/calibrate.py) — step-by-step web calibration with a `CalibrationManager` singleton and `_step_complete` threading.Event. A `"range"` model (SO-101) records each joint's range of motion; a `"zero"` model (reBot) waits in the `awaiting_zero` status for the user to pose the arm, then runs the driver's own `calibrate()`.
 - [train.py](lelab/train.py) — wraps the LeRobot training CLI as a subprocess (psutil for lifecycle, queue for log streaming).
 - [datasets.py](lelab/datasets.py) — dataset listing (local cache + Hub, merged under a `source` field) plus the episode-browsing handlers behind `/dataset-episodes`, `/dataset-episode`, `/dataset-frame`, `/dataset-thumbnails`, `/dataset-motion` and `/dataset-video`.
 - [episode_media.py](lelab/episode_media.py) — reads the LeRobot v3.0 on-disk layout (`meta/episodes/*.parquet` + `videos/`) and decodes frames with PyAV. Deliberately does **not** go through `LeRobotDataset`, so browsing a dataset never builds a robot config or imports torch. Several episodes share one mp4, so locating an episode resolves both the file and the `from_/to_timestamp` window inside it — which is why `/dataset-video` is addressed by chunk/file rather than by episode. Call `ensure_episode_index(repo_id)` before opening a local dataset with `LeRobotDataset`: LeRobot writes the index only in `finalize()`, and without it reads the dataset as "not downloaded yet" and fetches it from the Hub, which 404s for a dataset that was never pushed.
@@ -56,12 +57,13 @@ Each feature module owns module-level globals (e.g. `recording_active`, `teleope
 
 All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/utils/config.py)):
 
-- `calibration/teleoperators/so101_leader/*.json` — leader calibration files (also called "teleop")
-- `calibration/robots/so101_follower/*.json` — follower calibration files (also called "robot")
+- `calibration/teleoperators/<leader name>/*.json` — leader calibration files (also called "teleop"): `so_leader`, `rebot_102_leader`
+- `calibration/robots/<follower name>/*.json` — follower calibration files (also called "robot"): `so_follower`, `rebot_b601_follower`
+- `robots/<name>.json` — robot records: `robot_model`, ports, linked calibration files, cameras. Changing a record's model unlinks its calibration files.
 - `ports/{leader,follower}_port.txt` — last-used serial ports
 - `saved_configs/{leader,follower}_config.txt` — last-selected config name
 
-`device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. Don't conflate the two vocabularies.
+`device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. `robot_model` is the key of a robot model (`"so101"`, `"rebot_b601"`). Don't conflate the three vocabularies.
 
 ### Calibration files: dual-location pattern
 
@@ -69,7 +71,12 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 
 ## Hardware target
 
-Hardcoded for **SO-101 leader/follower arms** (`so101_leader`, `so101_follower`). Adding another robot type requires touching every feature module's config construction (search for `SO101LeaderConfig` / `SO101FollowerConfig`).
+The supported arm pairs are the entries of `ROBOT_MODELS` in [lelab/robot_models.py](lelab/robot_models.py), mirrored for the UI in [frontend/src/lib/robotModels.ts](frontend/src/lib/robotModels.ts):
+
+- `so101` (default): SO-101 leader and follower, Feetech motors.
+- `rebot_b601`: Seeed Studio reBot B601 follower (Damiao motors over a serial CAN bridge) with the reBot Arm 102 leader. Needs the `rebot` extra (`pip install -e ".[rebot]"`), which pulls `motorbridge`. LeLab runs this follower in position-velocity mode, not LeRobot's default MIT mode, so a session started from a button closes the initial leader/follower gap at a bounded speed. The 3D viewer has no model of this arm.
+
+Every request that drives an arm carries `robot_model` (default `so101`), taken from the robot record. To add a model: add it to both registries, give `make_follower_config` / `make_leader_config` a branch, and pick the `connect_arms` path that fits its calibration style.
 
 ## Phone camera / HTTPS
 

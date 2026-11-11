@@ -24,14 +24,21 @@ from pydantic import BaseModel, field_validator
 
 from lerobot.configs.dataset import DatasetRecordConfig
 from lerobot.datasets import LeRobotDataset
-from lerobot.robots.so_follower import SO101FollowerConfig
 
 # Import the main record functionality to reuse it
 from lerobot.scripts.lerobot_record import RecordConfig
-from lerobot.teleoperators.so_leader import SO101LeaderConfig
 
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
 from .episode_media import UnreadableDatasetError, ensure_episode_index
+from .robot_models import (
+    DEFAULT_ROBOT_MODEL,
+    RobotModelLiteral,
+    connect_arms,
+    get_robot_model,
+    make_follower_config,
+    make_leader_config,
+    model_for_follower,
+)
 from .utils.config import setup_calibration_files, with_lelab_tag
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -42,7 +49,7 @@ LOCAL_DATASET_NAMESPACE = "local"
 # Global variables for recording state
 recording_active = False
 recording_thread: threading.Thread | None = None
-# Live SO101Follower for the active session, set once the robot connects so the
+# Live follower for the active session, set once the robot connects so the
 # /camera-feed endpoint can peek its cameras' latest frames. Reset to None on
 # teardown. Always gated behind `recording_active` by readers.
 current_robot = None
@@ -64,6 +71,7 @@ class RecordingRequest(BaseModel):
     follower_port: str
     leader_config: str
     follower_config: str
+    robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL
     dataset_repo_id: str
     single_task: str
     num_episodes: int = 5
@@ -177,27 +185,19 @@ def create_record_config(request: RecordingRequest) -> RecordConfig:
     """Create a RecordConfig from the recording request"""
     from lerobot.utils.constants import HF_LEROBOT_HOME
 
+    model = get_robot_model(request.robot_model)
+
     # Setup calibration files
     leader_config_name, follower_config_name = setup_calibration_files(
-        request.leader_config, request.follower_config
+        request.leader_config, request.follower_config, model.key
     )
 
     # Convert the frontend camera dict into OpenCVCameraConfig objects. Backend
     # defaults to the platform pin unless the request overrides it per camera.
     camera_configs = _build_camera_configs(request.cameras, _platform_backend())
 
-    # Create robot config
-    robot_config = SO101FollowerConfig(
-        port=request.follower_port,
-        id=follower_config_name,
-        cameras=camera_configs,
-    )
-
-    # Create teleop config
-    teleop_config = SO101LeaderConfig(
-        port=request.leader_port,
-        id=leader_config_name,
-    )
+    robot_config = make_follower_config(model, request.follower_port, follower_config_name, camera_configs)
+    teleop_config = make_leader_config(model, request.leader_port, leader_config_name)
 
     # Create dataset config
     dataset_config = DatasetRecordConfig(
@@ -837,14 +837,6 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
             encoder_threads=cfg.dataset.encoder_threads,
         )
 
-    # Bring the devices up in the same order as teleoperation: buses, then
-    # calibration, then cameras and motor configuration.
-    #
-    # `robot.connect()` can't be used here. It prompts on stdin when the motors
-    # disagree with the calibration file (EOFError under the server), and it
-    # ends with configure(), which leaves torque enabled — writing the
-    # calibration registers afterwards corrupts the bus a few seconds into the
-    # recording loop.
     # Start with episode 1 - but track it properly
     current_episode = 1
     saved_episodes = 0  # Track how many episodes we've actually saved
@@ -853,46 +845,13 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
     # through it still leaves buses and cameras open, and the teardown below is
     # what frees them for the next attempt (see issue #50).
     try:
+        # Bring the devices up the same way teleoperation does.
         try:
-            logger.info("🔧 ROBOT CONNECTION: Attempting to connect robot...")
-            robot.bus.connect()
-            logger.info("✅ ROBOT CONNECTION: Robot bus connected successfully")
+            connect_arms(model_for_follower(robot), robot, teleop)
         except Exception as e:
-            logger.error(f"❌ ROBOT CONNECTION: Failed to connect robot: {e}")
-            raise
-
-        if teleop is not None:
-            try:
-                logger.info("🔧 TELEOP CONNECTION: Attempting to connect teleoperator...")
-                teleop.bus.connect()
-                logger.info("✅ TELEOP CONNECTION: Teleoperator bus connected successfully")
-            except Exception as e:
-                logger.error(f"❌ TELEOP CONNECTION: Failed to connect teleoperator: {e}")
-                raise
-
-        # Feetech motors only store calibration registers with the torque off,
-        # which also opens their EEPROM lock.
-        logger.info("Writing calibration to motors...")
-        robot.bus.disable_torque()
-        robot.bus.write_calibration(robot.calibration)
-        if teleop is not None:
-            teleop.bus.disable_torque()
-            teleop.bus.write_calibration(teleop.calibration)
-
-        try:
-            logger.info("🔧 CAMERA CONNECTION: Connecting cameras...")
-            for cam in robot.cameras.values():
-                cam.connect()
-            logger.info("✅ CAMERA CONNECTION: Cameras connected successfully")
-        except Exception as e:
-            logger.error(f"❌ CAMERA CONNECTION: Failed to connect cameras: {e}")
+            logger.error(f"❌ DEVICE CONNECTION: {e}")
             logger.error("💡 Make sure frontend camera streams are released before recording")
             raise
-
-        logger.info("Configuring motors...")
-        robot.configure()
-        if teleop is not None:
-            teleop.configure()
         logger.info("✅ Devices ready")
 
         # Expose the connected robot so /camera-feed can stream its cameras'

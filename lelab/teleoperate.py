@@ -20,9 +20,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
-
+from .robot_models import (
+    DEFAULT_ROBOT_MODEL,
+    RobotModelLiteral,
+    connect_arms,
+    get_robot_model,
+    make_follower,
+    make_leader,
+)
 from .utils.config import setup_calibration_files
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -33,6 +38,8 @@ teleoperation_active = False
 teleoperation_thread: threading.Thread | None = None
 current_robot = None
 current_teleop = None
+# Model of the arms in the active session; decides how joints map to the URDF.
+current_robot_model: str = DEFAULT_ROBOT_MODEL
 
 
 class TeleoperateRequest(BaseModel):
@@ -40,9 +47,10 @@ class TeleoperateRequest(BaseModel):
     follower_port: str
     leader_config: str
     follower_config: str
+    robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL
 
 
-def get_joint_positions_from_robot(robot) -> dict[str, float]:
+def get_joint_positions_from_robot(robot, robot_model: str = DEFAULT_ROBOT_MODEL) -> dict[str, float]:
     """
     Extract current joint positions from the robot and convert to URDF joint format.
 
@@ -53,23 +61,26 @@ def get_joint_positions_from_robot(robot) -> dict[str, float]:
     joint. (The gripper reports 0–100 rather than degrees, but that range lands
     inside the Jaw limit, matching the open/closed sweep.)
 
+    A model without a URDF in the frontend reports its joints under their motor
+    names, still in radians.
+
     Args:
-        robot: The robot instance (SO101Follower)
+        robot: The connected follower
+        robot_model: Key of the robot model the follower belongs to
 
     Returns:
         Dictionary mapping URDF joint names to radian values
     """
-    motor_to_urdf_mapping = {
-        "shoulder_pan": "Rotation",
-        "shoulder_lift": "Pitch",
-        "elbow_flex": "Elbow",
-        "wrist_flex": "Wrist_Pitch",
-        "wrist_roll": "Wrist_Roll",
-        "gripper": "Jaw",
-    }
+    motor_to_urdf_mapping = get_robot_model(robot_model).urdf_joints
 
     try:
         observation = robot.get_observation()
+        if motor_to_urdf_mapping is None:
+            return {
+                key.removesuffix(".pos"): value * math.pi / 180.0
+                for key, value in observation.items()
+                if key.endswith(".pos")
+            }
 
         joint_positions: dict[str, float] = {}
         debug_rows = []
@@ -94,7 +105,7 @@ def get_joint_positions_from_robot(robot) -> dict[str, float]:
 
     except Exception as e:
         logger.error(f"Error getting joint positions: {e}")
-        return dict.fromkeys(motor_to_urdf_mapping.values(), 0.0)
+        return dict.fromkeys((motor_to_urdf_mapping or {}).values(), 0.0)
 
 
 def _safe_disconnect(device) -> None:
@@ -114,7 +125,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
     dying silently in the worker thread while the API has already claimed
     success. Only the teleoperation loop runs in the background thread.
     """
-    global teleoperation_active, teleoperation_thread, current_robot, current_teleop
+    global teleoperation_active, teleoperation_thread, current_robot, current_teleop, current_robot_model
 
     from . import record as _record, replay as _replay, rollout as _rollout
 
@@ -136,67 +147,32 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
             f"Starting teleoperation with leader port: {request.leader_port}, follower port: {request.follower_port}"
         )
 
+        model = get_robot_model(request.robot_model)
+
         # Setup calibration files
         leader_config_name, follower_config_name = setup_calibration_files(
-            request.leader_config, request.follower_config
-        )
-
-        # Create robot and teleop configs
-        robot_config = SO101FollowerConfig(
-            port=request.follower_port,
-            id=follower_config_name,
-        )
-
-        teleop_config = SO101LeaderConfig(
-            port=request.leader_port,
-            id=leader_config_name,
+            request.leader_config, request.follower_config, model.key
         )
 
         # Connect synchronously. If either device fails to connect, clean up the
         # other (so its serial port is released) and report the error — do NOT
-        # leave the caller thinking teleoperation started.
+        # leave the caller thinking teleoperation started. The error names which
+        # arm failed and tells the user what to do.
         logger.info("Initializing robot and teleop device...")
-        robot = SO101Follower(robot_config)
-        teleop_device = SO101Leader(teleop_config)
-
-        # Connect each arm separately so the error names which one failed and
-        # tells the user what to do, instead of a generic "failed to start".
-        logger.info("Connecting to follower arm...")
-        try:
-            robot.bus.connect()
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not connect to the follower arm on {request.follower_port}. "
-                "Make sure it's plugged in and powered on, then try again."
-            ) from e
-
-        logger.info("Connecting to leader arm...")
-        try:
-            teleop_device.bus.connect()
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not connect to the leader arm on {request.leader_port}. "
-                "Make sure it's plugged in and powered on, then try again."
-            ) from e
-
-        # Feetech motors only store calibration registers with the torque off,
-        # which also opens their EEPROM lock.
-        logger.info("Writing calibration to motors...")
-        robot.bus.disable_torque()
-        robot.bus.write_calibration(robot.calibration)
-        teleop_device.bus.disable_torque()
-        teleop_device.bus.write_calibration(teleop_device.calibration)
-
-        # Connect cameras and configure motors
-        logger.info("Connecting cameras and configuring motors...")
-        for cam in robot.cameras.values():
-            cam.connect()
-        robot.configure()
-        teleop_device.configure()
+        robot = make_follower(model, request.follower_port, follower_config_name)
+        teleop_device = make_leader(model, request.leader_port, leader_config_name)
+        connect_arms(
+            model,
+            robot,
+            teleop_device,
+            follower_port=request.follower_port,
+            leader_port=request.leader_port,
+        )
         logger.info("Successfully connected to both devices")
 
         current_robot = robot
         current_teleop = teleop_device
+        current_robot_model = model.key
 
         # Stream the arms in the background; the worker owns disconnect so stop()
         # does not race the serial bus from the request thread.
@@ -215,7 +191,7 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
                     current_time = time.time()
                     if current_time - last_broadcast_time >= broadcast_interval:
                         try:
-                            joint_positions = get_joint_positions_from_robot(robot)
+                            joint_positions = get_joint_positions_from_robot(robot, model.key)
                             joint_data = {
                                 "type": "joint_update",
                                 "joints": joint_positions,
@@ -293,6 +269,7 @@ def handle_teleoperation_status() -> dict[str, Any]:
     """Handle teleoperation status request"""
     return {
         "teleoperation_active": teleoperation_active,
+        "robot_model": current_robot_model,
         "available_controls": {
             "stop_teleoperation": teleoperation_active,
         },
@@ -308,7 +285,7 @@ def handle_get_joint_positions() -> dict[str, Any]:
         return {"success": False, "message": "No active teleoperation session"}
 
     try:
-        joint_positions = get_joint_positions_from_robot(current_robot)
+        joint_positions = get_joint_positions_from_robot(current_robot, current_robot_model)
         return {"success": True, "joint_positions": joint_positions, "timestamp": time.time()}
     except Exception as e:
         logger.error(f"Error getting joint positions: {e}")

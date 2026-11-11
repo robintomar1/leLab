@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Literal
 
+from ..robot_models import DEFAULT_ROBOT_MODEL, SO101, get_robot_model, is_robot_model
+
 logger = logging.getLogger(__name__)
 
 RobotSide = Literal["leader", "follower"]
@@ -30,6 +32,18 @@ CALIBRATION_BASE_PATH_TELEOP = os.path.expanduser("~/.cache/huggingface/lerobot/
 CALIBRATION_BASE_PATH_ROBOTS = os.path.expanduser("~/.cache/huggingface/lerobot/calibration/robots")
 LEADER_CONFIG_PATH = os.path.join(CALIBRATION_BASE_PATH_TELEOP, "so_leader")
 FOLLOWER_CONFIG_PATH = os.path.join(CALIBRATION_BASE_PATH_ROBOTS, "so_follower")
+
+
+def calibration_dirs(robot_model: str | None = None) -> tuple[str, str]:
+    """(leader, follower) calibration directories LeRobot reads for `robot_model`."""
+    model = get_robot_model(robot_model)
+    if model.key == SO101:
+        return LEADER_CONFIG_PATH, FOLLOWER_CONFIG_PATH
+    return (
+        os.path.join(CALIBRATION_BASE_PATH_TELEOP, model.leader_name),
+        os.path.join(CALIBRATION_BASE_PATH_ROBOTS, model.follower_name),
+    )
+
 
 # Define port storage path
 PORT_CONFIG_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/ports")
@@ -88,15 +102,16 @@ def _config_file_for(robot_type: RobotSide) -> str:
     raise ValueError(f"robot_type must be 'leader' or 'follower', got {robot_type!r}")
 
 
-def setup_calibration_files(leader_config: str, follower_config: str):
+def setup_calibration_files(leader_config: str, follower_config: str, robot_model: str | None = None):
     """Setup calibration files in the correct locations for teleoperation and recording"""
+    leader_dir, follower_dir = calibration_dirs(robot_model)
     # Extract config names from file paths (remove .json extension)
     leader_config_name = os.path.splitext(leader_config)[0]
     follower_config_name = os.path.splitext(follower_config)[0]
 
     # Log the full paths to check if files exist
-    leader_config_full_path = os.path.join(LEADER_CONFIG_PATH, leader_config)
-    follower_config_full_path = os.path.join(FOLLOWER_CONFIG_PATH, follower_config)
+    leader_config_full_path = os.path.join(leader_dir, leader_config)
+    follower_config_full_path = os.path.join(follower_dir, follower_config)
 
     logger.info("Checking calibration files:")
     logger.info(f"Leader config path: {leader_config_full_path}")
@@ -105,8 +120,8 @@ def setup_calibration_files(leader_config: str, follower_config: str):
     logger.info(f"Follower config exists: {os.path.exists(follower_config_full_path)}")
 
     # Create calibration directories if they don't exist
-    leader_calibration_dir = LEADER_CONFIG_PATH
-    follower_calibration_dir = FOLLOWER_CONFIG_PATH
+    leader_calibration_dir = leader_dir
+    follower_calibration_dir = follower_dir
     os.makedirs(leader_calibration_dir, exist_ok=True)
     os.makedirs(follower_calibration_dir, exist_ok=True)
 
@@ -135,20 +150,21 @@ def setup_calibration_files(leader_config: str, follower_config: str):
     return leader_config_name, follower_config_name
 
 
-def setup_follower_calibration_file(follower_config: str):
+def setup_follower_calibration_file(follower_config: str, robot_model: str | None = None):
     """Setup follower calibration file in the correct location for replay functionality"""
+    _, follower_dir = calibration_dirs(robot_model)
     # Extract config name from file path (remove .json extension)
     follower_config_name = os.path.splitext(follower_config)[0]
 
     # Log the full path to check if file exists
-    follower_config_full_path = os.path.join(FOLLOWER_CONFIG_PATH, follower_config)
+    follower_config_full_path = os.path.join(follower_dir, follower_config)
 
     logger.info("Checking follower calibration file:")
     logger.info(f"Follower config path: {follower_config_full_path}")
     logger.info(f"Follower config exists: {os.path.exists(follower_config_full_path)}")
 
     # Create calibration directory if it doesn't exist
-    follower_calibration_dir = FOLLOWER_CONFIG_PATH
+    follower_calibration_dir = follower_dir
     os.makedirs(follower_calibration_dir, exist_ok=True)
 
     # Copy calibration file to the correct location if it's not already there
@@ -348,7 +364,7 @@ def is_valid_robot_name(name: str) -> bool:
 
 
 def _empty_record(name: str) -> dict:
-    record: dict = {"name": name}
+    record: dict = {"name": name, "robot_model": DEFAULT_ROBOT_MODEL}
     for field in _ROBOT_STRING_FIELDS:
         record[field] = ""
     for field in _ROBOT_LIST_FIELDS:
@@ -371,6 +387,9 @@ def get_robot_record(name: str) -> dict | None:
     record = _empty_record(name)
     record.update({k: v for k, v in data.items() if k in record})
     record["name"] = name
+    # Records written before robot models existed have no model: they are SO-101s.
+    if not is_robot_model(record["robot_model"]):
+        record["robot_model"] = DEFAULT_ROBOT_MODEL
     return record
 
 
@@ -410,6 +429,16 @@ def save_robot_record(name: str, data: dict, allow_create: bool = True) -> bool:
         return False
 
     record = existing if existing is not None else _empty_record(name)
+    new_model = data.get("robot_model")
+    if new_model is not None:
+        if not is_robot_model(new_model):
+            logger.error(f"Unknown robot model for {name}: {new_model!r}")
+            return False
+        if new_model != record["robot_model"]:
+            # Calibration files belong to a model: the ones linked so far no longer apply.
+            record["robot_model"] = new_model
+            record["leader_config"] = ""
+            record["follower_config"] = ""
     for field in _ROBOT_STRING_FIELDS:
         if field in data and isinstance(data[field], str):
             record[field] = data[field]
@@ -448,6 +477,10 @@ def is_robot_record_clean(record: dict) -> bool:
         value = record.get(field, "")
         if not isinstance(value, str) or not value.strip():
             return False
-    leader_path = os.path.join(LEADER_CONFIG_PATH, record["leader_config"])
-    follower_path = os.path.join(FOLLOWER_CONFIG_PATH, record["follower_config"])
+    try:
+        leader_dir, follower_dir = calibration_dirs(record.get("robot_model"))
+    except ValueError:
+        return False
+    leader_path = os.path.join(leader_dir, record["leader_config"])
+    follower_path = os.path.join(follower_dir, record["follower_config"])
     return os.path.exists(leader_path) and os.path.exists(follower_path)

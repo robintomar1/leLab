@@ -22,10 +22,16 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.utils.robot_utils import precise_sleep
 
 from . import episode_media
+from .robot_models import (
+    DEFAULT_ROBOT_MODEL,
+    RobotModelLiteral,
+    connect_arms,
+    get_robot_model,
+    make_follower,
+)
 from .utils.config import setup_follower_calibration_file
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -44,6 +50,7 @@ class ReplayRequest(BaseModel):
     follower_config: str
     dataset_repo_id: str
     episode_index: int
+    robot_model: RobotModelLiteral = DEFAULT_ROBOT_MODEL
 
 
 def _episode_actions(repo_id: str, episode_index: int) -> tuple[list[dict[str, float]], int]:
@@ -79,19 +86,10 @@ def handle_start_replay(request: ReplayRequest) -> dict[str, Any]:
     try:
         actions, fps = _episode_actions(request.dataset_repo_id, request.episode_index)
 
-        follower_id = setup_follower_calibration_file(request.follower_config)
-        robot = SO101Follower(SO101FollowerConfig(port=request.follower_port, id=follower_id))
-        try:
-            robot.bus.connect()
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not connect to the follower arm on {request.follower_port}. "
-                "Make sure it's plugged in and powered on, then try again."
-            ) from e
-        # Feetech motors only store calibration registers with the torque off.
-        robot.bus.disable_torque()
-        robot.bus.write_calibration(robot.calibration)
-        robot.configure()
+        model = get_robot_model(request.robot_model)
+        follower_id = setup_follower_calibration_file(request.follower_config, model.key)
+        robot = make_follower(model, request.follower_port, follower_id)
+        connect_arms(model, robot, follower_port=request.follower_port)
     except Exception as e:
         safe_disconnect_device(robot, logger)
         replay_active = False

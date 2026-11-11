@@ -36,8 +36,10 @@ def _force_close_device_resources(device: Any, logger: logging.Logger) -> None:
     bus = getattr(device, "bus", None)
     if bus is not None:
         # SerialMotorsBus.disconnect() closes the port even when disabling the torque fails.
+        # A motorbridge bus (reBot arms) has close() instead.
+        release = getattr(bus, "disconnect", None) or bus.close
         try:
-            bus.disconnect()
+            release()
             logger.info("Released serial port after disconnect failure")
         except Exception as exc:
             logger.warning("Serial port released, but disabling the torque failed: %s", exc)
