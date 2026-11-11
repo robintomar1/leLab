@@ -70,19 +70,29 @@ class RobotModel:
     position_kp: dict[str, float] | None = None
 
 
-def _rebot(key: str, label: str, control_mode: str, position_kp: dict[str, float] | None) -> RobotModel:
+# LeLab's own follower for the B601, registered by lelab/rebot_ff_follower.py.
+_REBOT_FEEDFORWARD_FOLLOWER = "lelab_rebot_b601_ff_follower"
+
+
+def _rebot(
+    key: str,
+    label: str,
+    follower_options: dict[str, Any],
+    position_kp: dict[str, float] | None,
+    follower_type: str = "rebot_b601_follower",
+) -> RobotModel:
     return RobotModel(
         key=key,
         label=f"reBot B601 + Arm 102 leader: {label}",
         family="rebot_b601",
-        follower_type="rebot_b601_follower",
+        follower_type=follower_type,
         leader_type="rebot_102_leader",
         follower_name="rebot_b601_follower",
         leader_name="rebot_102_leader",
         calibration="zero",
         urdf_joints=None,
         extra="rebot",
-        follower_options={"control_mode": control_mode},
+        follower_options=follower_options,
         position_kp=position_kp,
     )
 
@@ -112,12 +122,26 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     #
     # Factory gains: the follower trails the leader by 0.2 s (wrist) to 0.7 s
     # (shoulder, elbow).
-    REBOT_DEFAULT: _rebot(REBOT_DEFAULT, "default (factory gains)", "pos_vel", FACTORY_POSITION_KP),
+    REBOT_DEFAULT: _rebot(
+        REBOT_DEFAULT, "default (factory gains)", {"control_mode": "pos_vel"}, FACTORY_POSITION_KP
+    ),
     # Raised position-loop gains, as far as the whole arm stays stable: roughly half the lag.
-    REBOT_HIGH_POS_GAINS: _rebot(REBOT_HIGH_POS_GAINS, "high position gains", "pos_vel", HIGH_POSITION_KP),
-    # LeRobot's own default for this arm: a stiff spring to the target with no
-    # speed limit, so the follower snaps to the leader's pose when a session starts.
-    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", "mit", None),
+    REBOT_HIGH_POS_GAINS: _rebot(
+        REBOT_HIGH_POS_GAINS, "high position gains", {"control_mode": "pos_vel"}, HIGH_POSITION_KP
+    ),
+    # MIT mode: a spring and damper to the target, with LeRobot's gains. LeLab's
+    # follower also sends the target's velocity, which removes the lag the damper
+    # otherwise adds (lelab/rebot_ff_follower.py). MIT mode has no speed limit of
+    # its own, so the target is kept within `max_relative_target` degrees of the
+    # arm: the spring cannot wind up when a session starts with the follower away
+    # from the leader's pose.
+    REBOT_MIT: _rebot(
+        REBOT_MIT,
+        "MIT mode with velocity feed-forward",
+        {"control_mode": "mit", "max_relative_target": 20.0},
+        None,
+        follower_type=_REBOT_FEEDFORWARD_FOLLOWER,
+    ),
 }
 
 
@@ -164,11 +188,12 @@ def make_follower_config(model: RobotModel, port: str, device_id: str, cameras: 
 
         return SO101FollowerConfig(port=port, id=device_id, cameras=cameras, **model.follower_options)
     if model.family == "rebot_b601":
-        from lerobot.robots.rebot_b601_follower import RebotB601FollowerRobotConfig
+        if model.follower_type == _REBOT_FEEDFORWARD_FOLLOWER:
+            from .rebot_ff_follower import RebotB601FeedforwardFollowerConfig as FollowerConfig
+        else:
+            from lerobot.robots.rebot_b601_follower import RebotB601FollowerRobotConfig as FollowerConfig
 
-        return RebotB601FollowerRobotConfig(
-            port=port, id=device_id, cameras=cameras, **model.follower_options
-        )
+        return FollowerConfig(port=port, id=device_id, cameras=cameras, **model.follower_options)
     raise ValueError(f"Unknown robot model {model.key!r}")
 
 

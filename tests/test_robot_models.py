@@ -106,7 +106,7 @@ def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
     modes = [make_follower_config(m, "/dev/ttyACM0", "arm").control_mode.value for m in (default, high, mit)]
     assert modes == ["pos_vel", "pos_vel", "mit"]
     assert follower_cli_args(high) == ["--robot.control_mode=pos_vel"]
-    assert follower_cli_args(mit) == ["--robot.control_mode=mit"]
+    assert follower_cli_args(mit) == ["--robot.control_mode=mit", "--robot.max_relative_target=20.0"]
     assert follower_cli_args(get_robot_model(SO101)) == []
 
     assert default.position_kp == FACTORY_POSITION_KP

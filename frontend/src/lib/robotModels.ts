@@ -38,7 +38,7 @@ export const ROBOT_MODELS: Record<RobotModelKey, RobotModelInfo> = {
   // The same arms, driven three ways; see lelab/robot_models.py.
   rebot_default: rebot("rebot_default", "default (factory gains)"),
   rebot_high_pos_gains: rebot("rebot_high_pos_gains", "high position gains"),
-  rebot_mit: rebot("rebot_mit", "MIT mode"),
+  rebot_mit: rebot("rebot_mit", "MIT mode with velocity feed-forward"),
 };
 
 export const robotModelInfo = (key: string | null | undefined): RobotModelInfo =>

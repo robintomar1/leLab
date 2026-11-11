@@ -353,7 +353,8 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
         cmd = [
             sys.executable,
             "-m",
-            "lerobot.scripts.lerobot_rollout",
+            # LeRobot's rollout script, with LeLab's robot types registered first.
+            "lelab.rollout_entry",
             "--strategy.type=base",
             f"--policy.path={policy_path}",
             f"--policy.device={auto_select_torch_device().type}",
