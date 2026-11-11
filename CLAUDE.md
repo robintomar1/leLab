@@ -63,7 +63,7 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 - `ports/{leader,follower}_port.txt` — last-used serial ports
 - `saved_configs/{leader,follower}_config.txt` — last-selected config name
 
-`device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. `robot_model` is the key of a robot model (`"so101"`, `"rebot_b601"`). Don't conflate the three vocabularies.
+`device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. `robot_model` is the key of a robot model (`"so101"`, `"rebot_high_pos_gains"`, ...). Don't conflate the three vocabularies.
 
 ### Calibration files: dual-location pattern
 
@@ -74,9 +74,14 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 The supported arm pairs are the entries of `ROBOT_MODELS` in [lelab/robot_models.py](lelab/robot_models.py), mirrored for the UI in [frontend/src/lib/robotModels.ts](frontend/src/lib/robotModels.ts):
 
 - `so101` (default): SO-101 leader and follower, Feetech motors.
-- `rebot_b601`: Seeed Studio reBot B601 follower (Damiao motors over a serial CAN bridge) with the reBot Arm 102 leader. Needs the `rebot` extra (`pip install -e ".[rebot]"`), which pulls `motorbridge`. LeLab runs this follower in position-velocity mode, not LeRobot's default MIT mode, so a session started from a button closes the initial leader/follower gap at a bounded speed. The 3D viewer has no model of this arm. Before anything connects to the follower, `prepare_follower` raises the motors' position-loop gain (`KP_APR`, RAM only) through [lelab/rebot_tuning.py](lelab/rebot_tuning.py): at the factory value the arm trails the leader by 0.2–0.7 s. It opens the port itself, so it has to run while the port is free — including before the rollout subprocess.
+- `rebot_default`, `rebot_high_pos_gains`, `rebot_mit`: the Seeed Studio reBot B601 follower (Damiao motors over a serial CAN bridge) with the reBot Arm 102 leader, driven three ways. They are one `family` (`rebot_b601`): same drivers, calibration files and dataset `robot_type`, so switching a record between them keeps its calibration. All need the `rebot` extra (`pip install -e ".[rebot]"`), which pulls `motorbridge`. The 3D viewer has no model of this arm.
+  - `rebot_default`: position-velocity mode with the motors' factory position-loop gain (`KP_APR` 54). The follower trails the leader by 0.2 s (wrist) to 0.7 s (shoulder, elbow).
+  - `rebot_high_pos_gains`: position-velocity mode with `KP_APR` 800 (shoulder, elbow) and 200 (wrist): about 55 ms on every arm joint.
+  - `rebot_mit`: LeRobot's default MIT mode. No speed limit: the follower snaps to the leader's pose when a session starts.
 
-Every request that drives an arm carries `robot_model` (default `so101`), taken from the robot record. To add a model: add it to both registries, give `make_follower_config` / `make_leader_config` a branch, and pick the `connect_arms` path that fits its calibration style.
+  Position-velocity mode closes the gap to a target at a bounded speed, which suits sessions started from a button. Before anything connects to the follower, `prepare_follower` writes the model's `position_kp` to the motors (RAM only) through [lelab/rebot_tuning.py](lelab/rebot_tuning.py). `rebot_default` writes the factory value too, because a raised gain stays in the motors until they are power-cycled. It opens the port itself, so it has to run while the port is free — including before the rollout subprocess.
+
+Every request that drives an arm carries `robot_model` (default `so101`), taken from the robot record. To add another way of driving existing arms, add an entry to both registries. For new hardware, also give `make_follower_config` / `make_leader_config` a branch for its `family` and pick the `connect_arms` path that fits its calibration style.
 
 ## Phone camera / HTTPS
 

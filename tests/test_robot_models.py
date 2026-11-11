@@ -25,7 +25,9 @@ from types import SimpleNamespace
 import pytest
 
 from lelab.robot_models import (
-    REBOT_B601,
+    REBOT_DEFAULT,
+    REBOT_HIGH_POS_GAINS,
+    REBOT_MIT,
     ROBOT_MODELS,
     SO101,
     connect_arms,
@@ -33,7 +35,6 @@ from lelab.robot_models import (
     get_robot_model,
     make_follower_config,
     make_leader_config,
-    model_for_follower,
 )
 
 
@@ -70,41 +71,83 @@ def test_model_names_match_the_lerobot_device_classes(key: str) -> None:
 
     model = ROBOT_MODELS[key]
     modules = {
-        SO101: (
+        "so101": (
             "lerobot.robots.so_follower",
             "SO101Follower",
             "lerobot.teleoperators.so_leader",
             "SO101Leader",
         ),
-        REBOT_B601: (
+        "rebot_b601": (
             "lerobot.robots.rebot_b601_follower",
             "RebotB601Follower",
             "lerobot.teleoperators.rebot_102_leader",
             "RebotArm102Leader",
         ),
-    }[key]
+    }[model.family]
     follower_cls = getattr(importlib.import_module(modules[0]), modules[1])
     leader_cls = getattr(importlib.import_module(modules[2]), modules[3])
     assert follower_cls.name == model.follower_name
     assert leader_cls.name == model.leader_name
-    assert model_for_follower(follower_cls) is model
 
 
-def test_rebot_follower_runs_in_position_velocity_mode() -> None:
-    config = make_follower_config(get_robot_model(REBOT_B601), "/dev/ttyACM0", "arm")
-    assert config.control_mode.value == "pos_vel"
-    assert "--robot.control_mode=pos_vel" in follower_cli_args(get_robot_model(REBOT_B601))
+def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
+    from lelab.rebot_tuning import FACTORY_POSITION_KP, HIGH_POSITION_KP
+
+    default, high, mit = (get_robot_model(k) for k in (REBOT_DEFAULT, REBOT_HIGH_POS_GAINS, REBOT_MIT))
+
+    # Same hardware: same drivers, calibration files and dataset robot_type.
+    for model in (default, high, mit):
+        assert (model.family, model.follower_name, model.leader_name) == (
+            "rebot_b601",
+            "rebot_b601_follower",
+            "rebot_102_leader",
+        )
+
+    modes = [make_follower_config(m, "/dev/ttyACM0", "arm").control_mode.value for m in (default, high, mit)]
+    assert modes == ["pos_vel", "pos_vel", "mit"]
+    assert follower_cli_args(high) == ["--robot.control_mode=pos_vel"]
+    assert follower_cli_args(mit) == ["--robot.control_mode=mit"]
     assert follower_cli_args(get_robot_model(SO101)) == []
+
+    assert default.position_kp == FACTORY_POSITION_KP
+    assert high.position_kp == HIGH_POSITION_KP
+    assert mit.position_kp is None  # MIT mode does not use the motor's position loop
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        # The default variant writes the factory gains: a raised gain outlives the session that set it.
+        (REBOT_DEFAULT, {"shoulder_pan": 54.0, "wrist_roll": 54.0}),
+        (REBOT_HIGH_POS_GAINS, {"shoulder_pan": 800.0, "wrist_roll": 200.0}),
+    ],
+)
+def test_prepare_follower_writes_the_variants_gains(key: str, expected: dict, gains_log: list) -> None:
+    from lelab.robot_models import prepare_follower
+
+    prepare_follower(get_robot_model(key), "/dev/ttyACM0")
+    ((port, gains),) = gains_log
+    assert port == "/dev/ttyACM0"
+    assert {joint: gains[joint] for joint in expected} == expected
+    assert "gripper" not in gains
+
+
+def test_prepare_follower_leaves_mit_and_so101_motors_alone(gains_log: list) -> None:
+    from lelab.robot_models import prepare_follower
+
+    prepare_follower(get_robot_model(REBOT_MIT), "/dev/ttyACM0")
+    prepare_follower(get_robot_model(SO101), "/dev/ttyACM0")
+    assert gains_log == []
 
 
 @pytest.fixture(autouse=True)
-def gains_log(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
-    """No test here opens a real motor bus: record the ports the gains would be applied on."""
+def gains_log(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
+    """No test here opens a real motor bus: record the (port, gains) that would be applied."""
     import lelab.rebot_tuning as tuning
 
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        tuning, "apply_position_gains", lambda port, baud=921600, gains=None: calls.append(port)
+        tuning, "apply_position_gains", lambda port, gains, baud=921600: calls.append((port, gains))
     )
     return calls
 
@@ -127,7 +170,7 @@ class _Recorder:
 
 def test_connect_arms_connects_a_rebot_leader_before_powering_the_follower() -> None:
     log: list[str] = []
-    connect_arms(get_robot_model(REBOT_B601), _Recorder(log, "follower"), _Recorder(log, "leader"))
+    connect_arms(get_robot_model(REBOT_HIGH_POS_GAINS), _Recorder(log, "follower"), _Recorder(log, "leader"))
     assert log == ["leader.connect(calibrate=False)", "follower.connect(calibrate=False)"]
 
 
@@ -137,11 +180,11 @@ def test_connect_arms_sets_the_rebot_gains_before_the_follower_connects(gains_lo
     class _Follower(_Recorder):
         def connect(self, calibrate: bool = True) -> None:
             # By now the gains are in the motors, written on a bus that is closed again.
-            assert gains_log == ["/dev/ttyACM0"]
+            assert [port for port, _ in gains_log] == ["/dev/ttyACM0"]
             super().connect(calibrate)
 
     connect_arms(
-        get_robot_model(REBOT_B601),
+        get_robot_model(REBOT_HIGH_POS_GAINS),
         _Follower(log, "follower"),
         _Recorder(log, "leader"),
         follower_port="/dev/ttyACM0",
@@ -154,21 +197,16 @@ def test_connect_arms_reports_the_follower_when_its_gains_cannot_be_set(
 ) -> None:
     import lelab.rebot_tuning as tuning
 
-    def fail(port, baud=921600, gains=None):
+    def fail(port, gains, baud=921600):
         raise RuntimeError("shoulder_pan: no acknowledgement")
 
     monkeypatch.setattr(tuning, "apply_position_gains", fail)
     log: list[str] = []
     with pytest.raises(RuntimeError, match="follower arm on /dev/ttyACM0"):
-        connect_arms(get_robot_model(REBOT_B601), _Recorder(log, "follower"), follower_port="/dev/ttyACM0")
+        connect_arms(
+            get_robot_model(REBOT_HIGH_POS_GAINS), _Recorder(log, "follower"), follower_port="/dev/ttyACM0"
+        )
     assert log == []  # the follower was never powered
-
-
-def test_so101_followers_are_not_prepared(gains_log: list) -> None:
-    from lelab.robot_models import prepare_follower
-
-    prepare_follower(get_robot_model(SO101), "/dev/ttyACM0")
-    assert gains_log == []
 
 
 class _FakeMotor:
@@ -218,14 +256,15 @@ def _real_apply_position_gains(monkeypatch: pytest.MonkeyPatch, bus: _FakeBus):
     tuning = importlib.reload(tuning)
     monkeypatch.setattr(tuning, "_open_bus", lambda port, baud: bus)
     monkeypatch.setattr(tuning.time, "sleep", lambda s: None)
-    return tuning.apply_position_gains
+    return tuning.apply_position_gains, tuning.HIGH_POSITION_KP
 
 
 def test_position_gains_are_written_to_ram_per_motor_and_the_bus_released(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bus = _FakeBus(missed_acks=2)  # the first two writes lose their acknowledgement
-    _real_apply_position_gains(monkeypatch, bus)("/dev/ttyACM0")
+    apply, gains = _real_apply_position_gains(monkeypatch, bus)
+    apply("/dev/ttyACM0", gains)
 
     stored = {motor.joint_id: motor.kp for motor in bus.motors}
     # CAN ids 1-3 are the 4340P joints, 4-6 the 4310 wrist; the gripper (7) is not touched.
@@ -238,7 +277,8 @@ def test_position_gains_are_written_to_ram_per_motor_and_the_bus_released(
 def test_position_gains_fail_loudly_when_a_motor_does_not_take_them(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus(ignore_writes=True)
     with pytest.raises(RuntimeError, match="shoulder_pan.*KP_APR reads 54"):
-        _real_apply_position_gains(monkeypatch, bus)("/dev/ttyACM0")
+        apply, gains = _real_apply_position_gains(monkeypatch, bus)
+        apply("/dev/ttyACM0", gains)
     assert bus.closed  # the port is free for the next attempt
 
 
@@ -246,7 +286,7 @@ def test_connect_arms_never_powers_the_rebot_follower_when_the_leader_fails() ->
     log: list[str] = []
     with pytest.raises(RuntimeError, match="leader arm on /dev/ttyUSB0"):
         connect_arms(
-            get_robot_model(REBOT_B601),
+            get_robot_model(REBOT_HIGH_POS_GAINS),
             _Recorder(log, "follower"),
             _Recorder(log, "leader", fail=True),
             leader_port="/dev/ttyUSB0",
@@ -257,7 +297,9 @@ def test_connect_arms_never_powers_the_rebot_follower_when_the_leader_fails() ->
 def test_connect_arms_names_the_rebot_follower_port_on_failure() -> None:
     with pytest.raises(RuntimeError, match="follower arm on /dev/ttyACM0"):
         connect_arms(
-            get_robot_model(REBOT_B601), _Recorder([], "follower", fail=True), follower_port="/dev/ttyACM0"
+            get_robot_model(REBOT_HIGH_POS_GAINS),
+            _Recorder([], "follower", fail=True),
+            follower_port="/dev/ttyACM0",
         )
 
 
@@ -268,7 +310,7 @@ def test_calibration_dirs_follow_the_model(tmp_lerobot_home: Path) -> None:
     from lelab.utils import config as cfg
 
     assert cfg.calibration_dirs() == (cfg.LEADER_CONFIG_PATH, cfg.FOLLOWER_CONFIG_PATH)
-    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_B601)
+    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_HIGH_POS_GAINS)
     assert Path(leader_dir).name == "rebot_102_leader"
     assert Path(follower_dir).name == "rebot_b601_follower"
 
@@ -276,13 +318,13 @@ def test_calibration_dirs_follow_the_model(tmp_lerobot_home: Path) -> None:
 def test_setup_calibration_files_reads_the_models_directories(tmp_lerobot_home: Path) -> None:
     from lelab.utils import config as cfg
 
-    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_B601)
+    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_HIGH_POS_GAINS)
     for directory, name in ((leader_dir, "lead.json"), (follower_dir, "follow.json")):
         Path(directory).mkdir(parents=True, exist_ok=True)
         (Path(directory) / name).write_text("{}")
 
-    assert cfg.setup_calibration_files("lead.json", "follow.json", REBOT_B601) == ("lead", "follow")
-    assert cfg.setup_follower_calibration_file("follow.json", REBOT_B601) == "follow"
+    assert cfg.setup_calibration_files("lead.json", "follow.json", REBOT_HIGH_POS_GAINS) == ("lead", "follow")
+    assert cfg.setup_follower_calibration_file("follow.json", REBOT_HIGH_POS_GAINS) == "follow"
     # The same names are not SO-101 calibrations.
     with pytest.raises(FileNotFoundError):
         cfg.setup_calibration_files("lead.json", "follow.json")
@@ -323,19 +365,24 @@ def test_changing_a_records_model_unlinks_its_calibrations(
             "follower_config": "arm.json",
         },
     )
-    cfg.save_robot_record("arm", {"robot_model": REBOT_B601})
+    cfg.save_robot_record("arm", {"robot_model": REBOT_HIGH_POS_GAINS})
     record = cfg.get_robot_record("arm")
-    assert record["robot_model"] == REBOT_B601
+    assert record["robot_model"] == REBOT_HIGH_POS_GAINS
     assert (record["leader_config"], record["follower_config"]) == ("", "")
     assert record["leader_port"] == "/dev/ttyUSB0"  # ports survive
 
     # Re-sending the same model is not a change.
-    cfg.save_robot_record("arm", {"robot_model": REBOT_B601, "follower_config": "f.json"})
-    cfg.save_robot_record("arm", {"robot_model": REBOT_B601})
+    cfg.save_robot_record("arm", {"robot_model": REBOT_HIGH_POS_GAINS, "follower_config": "f.json"})
+    cfg.save_robot_record("arm", {"robot_model": REBOT_HIGH_POS_GAINS})
     assert cfg.get_robot_record("arm")["follower_config"] == "f.json"
 
+    # Another way of driving the same arms uses the same calibration files.
+    cfg.save_robot_record("arm", {"robot_model": REBOT_MIT})
+    record = cfg.get_robot_record("arm")
+    assert (record["robot_model"], record["follower_config"]) == (REBOT_MIT, "f.json")
+
     assert cfg.save_robot_record("arm", {"robot_model": "not_a_robot"}) is False
-    assert cfg.get_robot_record("arm")["robot_model"] == REBOT_B601
+    assert cfg.get_robot_record("arm")["robot_model"] == REBOT_MIT
 
 
 def test_record_is_clean_only_with_calibrations_of_its_own_model(
@@ -343,7 +390,7 @@ def test_record_is_clean_only_with_calibrations_of_its_own_model(
 ) -> None:
     from lelab.utils import config as cfg
 
-    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_B601)
+    leader_dir, follower_dir = cfg.calibration_dirs(REBOT_HIGH_POS_GAINS)
     for directory in (leader_dir, follower_dir):
         Path(directory).mkdir(parents=True, exist_ok=True)
         (Path(directory) / "arm.json").write_text("{}")
@@ -355,7 +402,7 @@ def test_record_is_clean_only_with_calibrations_of_its_own_model(
         "leader_config": "arm.json",
         "follower_config": "arm.json",
     }
-    assert cfg.is_robot_record_clean({**record, "robot_model": REBOT_B601}) is True
+    assert cfg.is_robot_record_clean({**record, "robot_model": REBOT_HIGH_POS_GAINS}) is True
     assert cfg.is_robot_record_clean({**record, "robot_model": SO101}) is False
 
 
@@ -370,19 +417,19 @@ def test_robot_endpoints_carry_the_model(
 
     models = client.get("/robot-models").json()
     assert {m["key"] for m in models["models"]} == set(ROBOT_MODELS)
-    rebot = next(m for m in models["models"] if m["key"] == REBOT_B601)
+    rebot = next(m for m in models["models"] if m["key"] == REBOT_HIGH_POS_GAINS)
     assert rebot["calibration"] == "zero"
     assert rebot["has_urdf"] is False
     assert rebot["dataset_robot_type"] == "rebot_b601_follower"
 
-    created = client.post("/robots/arm?create=true", json={"robot_model": REBOT_B601})
-    assert created.json()["robot"]["robot_model"] == REBOT_B601
+    created = client.post("/robots/arm?create=true", json={"robot_model": REBOT_HIGH_POS_GAINS})
+    assert created.json()["robot"]["robot_model"] == REBOT_HIGH_POS_GAINS
     assert client.post("/robots/arm", json={"robot_model": "not_a_robot"}).status_code == 400
 
-    _, follower_dir = cfg.calibration_dirs(REBOT_B601)
+    _, follower_dir = cfg.calibration_dirs(REBOT_HIGH_POS_GAINS)
     Path(follower_dir).mkdir(parents=True, exist_ok=True)
     (Path(follower_dir) / "follower1.json").write_text("{}")
-    listed = client.get(f"/calibration-configs/robot?robot_model={REBOT_B601}").json()
+    listed = client.get(f"/calibration-configs/robot?robot_model={REBOT_HIGH_POS_GAINS}").json()
     assert [c["filename"] for c in listed["configs"]] == ["follower1.json"]
     assert client.get("/calibration-configs/robot").json()["configs"] == []
     assert client.get("/calibration-configs/robot?robot_model=not_a_robot").status_code == 422
@@ -398,7 +445,7 @@ def test_joint_positions_of_a_model_without_urdf_keep_their_motor_names() -> Non
         def get_observation(self):
             return {"shoulder_pan.pos": 90.0, "wrist_yaw.pos": -45.0, "front": object()}
 
-    positions = get_joint_positions_from_robot(_Robot(), REBOT_B601)
+    positions = get_joint_positions_from_robot(_Robot(), REBOT_HIGH_POS_GAINS)
     assert positions == {
         "shoulder_pan": pytest.approx(math.pi / 2),
         "wrist_yaw": pytest.approx(-math.pi / 4),
@@ -439,14 +486,14 @@ def test_teleoperation_builds_the_requested_models_arms(monkeypatch: pytest.Monk
             follower_port="/dev/ttyACM0",
             leader_config="leader.json",
             follower_config="follower.json",
-            robot_model=REBOT_B601,
+            robot_model=REBOT_HIGH_POS_GAINS,
         )
     )
 
     assert result == {"success": False, "message": "stop before the loop"}
-    assert seen["setup_model"] == REBOT_B601
-    assert seen["connect_model"] == REBOT_B601
-    assert seen["disconnected"] == ["rebot_b601-follower", "rebot_b601-leader"]
+    assert seen["setup_model"] == REBOT_HIGH_POS_GAINS
+    assert seen["connect_model"] == REBOT_HIGH_POS_GAINS
+    assert seen["disconnected"] == ["rebot_high_pos_gains-follower", "rebot_high_pos_gains-leader"]
     assert teleop.teleoperation_active is False
 
 
@@ -473,7 +520,7 @@ def test_record_config_uses_the_requested_models_devices(monkeypatch: pytest.Mon
             follower_port="/dev/ttyACM0",
             leader_config="leader.json",
             follower_config="follower.json",
-            robot_model=REBOT_B601,
+            robot_model=REBOT_HIGH_POS_GAINS,
             dataset_repo_id="local/rebot_test",
             single_task="pick",
         )
@@ -519,13 +566,13 @@ def test_rebot_rollout_argv_parses(tmp_path, monkeypatch: pytest.MonkeyPatch, ga
         InferenceRequest(
             follower_port="/dev/ttyACM0",
             follower_config="follower1.json",
-            robot_model=REBOT_B601,
+            robot_model=REBOT_HIGH_POS_GAINS,
             policy_ref=str(checkpoint),
             task="pick the cube",
         )
     )
-    assert seen_models == [REBOT_B601]
-    assert gains_log == ["/dev/ttyACM0"]  # set before the subprocess takes the port
+    assert seen_models == [REBOT_HIGH_POS_GAINS]
+    assert [port for port, _ in gains_log] == ["/dev/ttyACM0"]  # set before the subprocess takes the port
 
     parsed = []
 
@@ -600,7 +647,7 @@ def _start_zero_calibration(monkeypatch: pytest.MonkeyPatch, device: _ZeroDevice
             port="/dev/ttyACM0",
             config_file="arm",
             robot_name=robot_name,
-            robot_model=REBOT_B601,
+            robot_model=REBOT_HIGH_POS_GAINS,
         )
     )
     assert result["success"] is True
@@ -643,7 +690,7 @@ def test_zero_calibration_links_the_file_to_the_robot_record(
     robots = tmp_lerobot_home / "robots"
     robots.mkdir(exist_ok=True)
     monkeypatch.setattr(cfg, "ROBOTS_PATH", str(robots))
-    cfg.save_robot_record("arm", {"robot_model": REBOT_B601})
+    cfg.save_robot_record("arm", {"robot_model": REBOT_HIGH_POS_GAINS})
 
     mgr = _start_zero_calibration(monkeypatch, _ZeroDevice(), robot_name="arm")
     mgr.complete_step()

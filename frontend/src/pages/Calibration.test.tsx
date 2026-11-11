@@ -36,7 +36,7 @@ const json = (body: unknown) => new Response(JSON.stringify(body));
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div"); root = createRoot(container);
-  record = { name: "arm", robot_model: "rebot_b601", leader_port: "/dev/ttyUSB0", follower_port: "/dev/ttyACM0", leader_config: "leader.json", follower_config: "", cameras: [], is_clean: false };
+  record = { name: "arm", robot_model: "rebot_high_pos_gains", leader_port: "/dev/ttyUSB0", follower_port: "/dev/ttyACM0", leader_config: "leader.json", follower_config: "", cameras: [], is_clean: false };
   status = idle;
   mocks.fetcher.mockReset(); mocks.toast.mockReset();
   mocks.fetcher.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -66,7 +66,7 @@ afterEach(() => { act(() => root.unmount()); });
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const button = (label: string) => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(label));
 const calls = (suffix: string) => mocks.fetcher.mock.calls.filter(([url]) => (url as string).includes(suffix));
-const modelSelect = () => Array.from(container.querySelectorAll("select")).find((s) => Array.from(s.options).some((o) => o.value === "rebot_b601"))!;
+const modelSelect = () => Array.from(container.querySelectorAll("select")).find((s) => Array.from(s.options).some((o) => o.value === "rebot_high_pos_gains"))!;
 
 async function render() {
   await act(async () => root.render(<Calibration />));
@@ -76,16 +76,16 @@ async function render() {
 test("a reBot arm is calibrated by setting its zero position", async () => {
   await render();
 
-  expect(modelSelect().value).toBe("rebot_b601");
+  expect(modelSelect().value).toBe("rebot_high_pos_gains");
   expect(container.textContent).toContain("Zero-position calibration");
   expect(container.querySelector("video")).toBeNull();
   // The follower is the side still missing a calibration, and its files are listed per model.
-  expect(calls("/calibration-configs/").at(-1)![0]).toBe("http://test/calibration-configs/robot?robot_model=rebot_b601");
+  expect(calls("/calibration-configs/").at(-1)![0]).toBe("http://test/calibration-configs/robot?robot_model=rebot_high_pos_gains");
 
   await act(async () => button("Start Calibration")!.click());
   await flush();
   const request = JSON.parse(calls("/start-calibration")[0][1].body);
-  expect(request).toEqual({ device_type: "robot", port: "/dev/ttyACM0", config_file: "arm", robot_name: "arm", robot_model: "rebot_b601" });
+  expect(request).toEqual({ device_type: "robot", port: "/dev/ttyACM0", config_file: "arm", robot_name: "arm", robot_model: "rebot_high_pos_gains" });
 
   expect(container.textContent).toContain("Torque is off");
   await act(async () => button("Set Zero Position")!.click());

@@ -32,12 +32,12 @@ from .camera_config import lerobot_camera_settings, validate_camera_rotations
 from .episode_media import UnreadableDatasetError, ensure_episode_index
 from .robot_models import (
     DEFAULT_ROBOT_MODEL,
+    RobotModel,
     RobotModelLiteral,
     connect_arms,
     get_robot_model,
     make_follower_config,
     make_leader_config,
-    model_for_follower,
 )
 from .utils.config import setup_calibration_files, with_lelab_tag
 from .utils.devices import follower_lock, safe_disconnect_device
@@ -333,7 +333,9 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
                     )
                     time.sleep(2.0)
 
-                dataset = record_with_web_events(record_config, recording_events)
+                dataset = record_with_web_events(
+                    record_config, recording_events, get_robot_model(request.robot_model)
+                )
                 logger.info(f"Recording completed successfully. Dataset has {dataset.num_episodes} episodes")
                 last_recording_info = {
                     "success": True,
@@ -772,7 +774,7 @@ def handle_upload_dataset(request: UploadRequest) -> dict[str, Any]:
         return {"success": False, "message": f"Failed to upload dataset: {str(e)}"}
 
 
-def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDataset:
+def record_with_web_events(cfg: RecordConfig, web_events: dict, model: RobotModel) -> LeRobotDataset:
     """
     Implement recording with phase tracking - exactly mirrors original record() function behavior
     """
@@ -847,7 +849,7 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
     try:
         # Bring the devices up the same way teleoperation does.
         try:
-            connect_arms(model_for_follower(robot), robot, teleop)
+            connect_arms(model, robot, teleop)
         except Exception as e:
             logger.error(f"❌ DEVICE CONNECTION: {e}")
             logger.error("💡 Make sure frontend camera streams are released before recording")

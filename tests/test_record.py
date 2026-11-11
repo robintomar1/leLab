@@ -228,7 +228,7 @@ def test_worker_releases_active_state_when_path_probe_fails(
     def boom(repo_id):
         raise OSError("Too many levels of symbolic links")
 
-    def fail_recording(cfg, events):
+    def fail_recording(cfg, events, model):
         raise RuntimeError("recording failed")
 
     monkeypatch.setattr(record, "_resolve_dataset_dir", boom)

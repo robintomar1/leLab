@@ -435,10 +435,12 @@ def save_robot_record(name: str, data: dict, allow_create: bool = True) -> bool:
             logger.error(f"Unknown robot model for {name}: {new_model!r}")
             return False
         if new_model != record["robot_model"]:
-            # Calibration files belong to a model: the ones linked so far no longer apply.
+            # Calibration files belong to the hardware: they survive a switch between
+            # two ways of driving the same arms, and no longer apply to other arms.
+            if calibration_dirs(new_model) != calibration_dirs(record["robot_model"]):
+                record["leader_config"] = ""
+                record["follower_config"] = ""
             record["robot_model"] = new_model
-            record["leader_config"] = ""
-            record["follower_config"] = ""
     for field in _ROBOT_STRING_FIELDS:
         if field in data and isinstance(data[field], str):
             record[field] = data[field]

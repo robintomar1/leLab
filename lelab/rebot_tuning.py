@@ -38,7 +38,13 @@ RID_KP_APR = 27
 _WRITE_ATTEMPTS = 5
 _READ_TIMEOUT_MS = 500
 
-POSITION_KP: dict[str, float] = {
+_ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll")
+
+# What the motors ship with. Written explicitly, because a gain raised by an
+# earlier session stays in the motors until they are power-cycled.
+FACTORY_POSITION_KP: dict[str, float] = dict.fromkeys(_ARM_JOINTS, 54.0)
+
+HIGH_POSITION_KP: dict[str, float] = {
     "shoulder_pan": 800.0,
     "shoulder_lift": 800.0,
     "elbow_flex": 800.0,
@@ -70,7 +76,7 @@ def _write_gain(motor, value: float) -> None:
     raise RuntimeError(f"Could not set the position-loop gain: {last_error}")
 
 
-def apply_position_gains(port: str, baud: int = 921600, gains: dict[str, float] | None = None) -> None:
+def apply_position_gains(port: str, gains: dict[str, float], baud: int = 921600) -> None:
     """Set the follower's position-loop gains, on a bus of its own.
 
     Call it before the follower is connected: the port must be free, and the
@@ -80,7 +86,6 @@ def apply_position_gains(port: str, baud: int = 921600, gains: dict[str, float] 
     """
     from lerobot.robots.rebot_b601_follower.motor_family import DM_PROFILE
 
-    gains = POSITION_KP if gains is None else gains
     bus = _open_bus(port, baud)
     motors = []
     try:

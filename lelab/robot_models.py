@@ -25,22 +25,29 @@ optional `rebot` extra.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from .rebot_tuning import FACTORY_POSITION_KP, HIGH_POSITION_KP
 
 logger = logging.getLogger(__name__)
 
 SO101 = "so101"
-REBOT_B601 = "rebot_b601"
+REBOT_DEFAULT = "rebot_default"
+REBOT_HIGH_POS_GAINS = "rebot_high_pos_gains"
+REBOT_MIT = "rebot_mit"
 DEFAULT_ROBOT_MODEL = SO101
 
-RobotModelLiteral = Literal["so101", "rebot_b601"]
+RobotModelLiteral = Literal["so101", "rebot_default", "rebot_high_pos_gains", "rebot_mit"]
 
 
 @dataclass(frozen=True)
 class RobotModel:
     key: str
     label: str
+    # The hardware: models of one family share drivers, calibration files and
+    # dataset robot_type, and differ only in how the follower is driven.
+    family: Literal["so101", "rebot_b601"]
     # `--robot.type` / `--teleop.type` names LeRobot registers the configs under.
     follower_type: str
     leader_type: str
@@ -55,12 +62,36 @@ class RobotModel:
     urdf_joints: dict[str, str] | None
     # pip extra of LeLab that installs the drivers, when they are optional.
     extra: str | None = None
+    # Follower config fields that differ from LeRobot's defaults; also sent as
+    # `--robot.<name>=<value>` to LeRobot's CLIs.
+    follower_options: dict[str, Any] = field(default_factory=dict)
+    # Position-loop gain (KP_APR) to put in each motor before the follower is
+    # connected; None leaves the motors alone. See rebot_tuning.py.
+    position_kp: dict[str, float] | None = None
+
+
+def _rebot(key: str, label: str, control_mode: str, position_kp: dict[str, float] | None) -> RobotModel:
+    return RobotModel(
+        key=key,
+        label=f"reBot B601 + Arm 102 leader: {label}",
+        family="rebot_b601",
+        follower_type="rebot_b601_follower",
+        leader_type="rebot_102_leader",
+        follower_name="rebot_b601_follower",
+        leader_name="rebot_102_leader",
+        calibration="zero",
+        urdf_joints=None,
+        extra="rebot",
+        follower_options={"control_mode": control_mode},
+        position_kp=position_kp,
+    )
 
 
 ROBOT_MODELS: dict[str, RobotModel] = {
     SO101: RobotModel(
         key=SO101,
         label="SO-101",
+        family="so101",
         follower_type="so101_follower",
         leader_type="so101_leader",
         follower_name="so_follower",
@@ -75,25 +106,19 @@ ROBOT_MODELS: dict[str, RobotModel] = {
             "gripper": "Jaw",
         },
     ),
-    REBOT_B601: RobotModel(
-        key=REBOT_B601,
-        label="reBot B601 (Damiao) + reBot Arm 102 leader",
-        follower_type="rebot_b601_follower",
-        leader_type="rebot_102_leader",
-        follower_name="rebot_b601_follower",
-        leader_name="rebot_102_leader",
-        calibration="zero",
-        urdf_joints=None,
-        extra="rebot",
-    ),
+    # The same arms, driven three ways. Position-velocity mode closes the gap to
+    # a target at a bounded speed (the motor profile's `pos_vel_velocity`), which
+    # suits sessions started from a button with the follower wherever it was left.
+    #
+    # Factory gains: the follower trails the leader by 0.2 s (wrist) to 0.7 s
+    # (shoulder, elbow).
+    REBOT_DEFAULT: _rebot(REBOT_DEFAULT, "default (factory gains)", "pos_vel", FACTORY_POSITION_KP),
+    # Raised position-loop gains: about 55 ms on every arm joint.
+    REBOT_HIGH_POS_GAINS: _rebot(REBOT_HIGH_POS_GAINS, "high position gains", "pos_vel", HIGH_POSITION_KP),
+    # LeRobot's own default for this arm: a stiff spring to the target with no
+    # speed limit, so the follower snaps to the leader's pose when a session starts.
+    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", "mit", None),
 }
-
-# The B601 is driven in position-velocity mode rather than LeRobot's default MIT
-# mode. LeLab starts teleoperation and replay from a button, with the follower
-# wherever it was left: MIT mode answers that initial error with a torque
-# proportional to it, while position-velocity mode closes it at a bounded speed
-# (the motor profile's `pos_vel_velocity`).
-_REBOT_FOLLOWER_OPTIONS: dict[str, Any] = {"control_mode": "pos_vel"}
 
 
 def get_robot_model(key: str | None) -> RobotModel:
@@ -108,31 +133,21 @@ def is_robot_model(key: Any) -> bool:
     return isinstance(key, str) and key in ROBOT_MODELS
 
 
-def model_for_follower(robot) -> RobotModel:
-    """The model a LeRobot follower device belongs to."""
-    for model in ROBOT_MODELS.values():
-        if model.follower_name == robot.name:
-            return model
-    raise ValueError(f"No robot model drives a {robot.name!r} follower")
-
-
 def prepare_follower(model: RobotModel, port: str) -> None:
     """Settings a follower needs in its motors before anything connects to it.
 
     Runs on a connection of its own, so the port must be free: call it before
     the follower is connected, or before a subprocess that will connect to it.
     """
-    if model.key == REBOT_B601:
+    if model.position_kp is not None:
         from .rebot_tuning import apply_position_gains
 
-        apply_position_gains(port)
+        apply_position_gains(port, model.position_kp)
 
 
 def follower_cli_args(model: RobotModel) -> list[str]:
     """`--robot.*` flags, besides type/port/id/cameras, that LeRobot's CLIs need for this follower."""
-    if model.key == REBOT_B601:
-        return [f"--robot.{name}={value}" for name, value in _REBOT_FOLLOWER_OPTIONS.items()]
-    return []
+    return [f"--robot.{name}={value}" for name, value in model.follower_options.items()]
 
 
 def _missing_extra(model: RobotModel, error: ImportError) -> ImportError:
@@ -144,25 +159,25 @@ def _missing_extra(model: RobotModel, error: ImportError) -> ImportError:
 
 def make_follower_config(model: RobotModel, port: str, device_id: str, cameras: dict | None = None):
     cameras = cameras or {}
-    if model.key == SO101:
+    if model.family == "so101":
         from lerobot.robots.so_follower import SO101FollowerConfig
 
-        return SO101FollowerConfig(port=port, id=device_id, cameras=cameras)
-    if model.key == REBOT_B601:
+        return SO101FollowerConfig(port=port, id=device_id, cameras=cameras, **model.follower_options)
+    if model.family == "rebot_b601":
         from lerobot.robots.rebot_b601_follower import RebotB601FollowerRobotConfig
 
         return RebotB601FollowerRobotConfig(
-            port=port, id=device_id, cameras=cameras, **_REBOT_FOLLOWER_OPTIONS
+            port=port, id=device_id, cameras=cameras, **model.follower_options
         )
     raise ValueError(f"Unknown robot model {model.key!r}")
 
 
 def make_leader_config(model: RobotModel, port: str, device_id: str):
-    if model.key == SO101:
+    if model.family == "so101":
         from lerobot.teleoperators.so_leader import SO101LeaderConfig
 
         return SO101LeaderConfig(port=port, id=device_id)
-    if model.key == REBOT_B601:
+    if model.family == "rebot_b601":
         from lerobot.teleoperators.rebot_102_leader import RebotArm102LeaderTeleopConfig
 
         return RebotArm102LeaderTeleopConfig(port=port, id=device_id)
