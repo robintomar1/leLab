@@ -1,7 +1,12 @@
 // The leader/follower arm pairs LeLab can drive. Mirrors lelab/robot_models.py:
 // the backend validates every `robot_model` it is sent against that registry.
 
-export type RobotModelKey = "so101" | "rebot_default" | "rebot_high_pos_gains" | "rebot_mit";
+export type RobotModelKey =
+  | "so101"
+  | "rebot_default"
+  | "rebot_high_pos_gains"
+  | "rebot_mit"
+  | "rebot_mit_ff";
 
 export interface RobotModelInfo {
   key: RobotModelKey;
@@ -35,10 +40,11 @@ export const ROBOT_MODELS: Record<RobotModelKey, RobotModelInfo> = {
     hasUrdf: true,
     datasetRobotType: "so_follower",
   },
-  // The same arms, driven three ways; see lelab/robot_models.py.
+  // The same arms, driven four ways; see lelab/robot_models.py.
   rebot_default: rebot("rebot_default", "default (factory gains)"),
   rebot_high_pos_gains: rebot("rebot_high_pos_gains", "high position gains"),
-  rebot_mit: rebot("rebot_mit", "MIT mode with velocity feed-forward"),
+  rebot_mit: rebot("rebot_mit", "MIT mode"),
+  rebot_mit_ff: rebot("rebot_mit_ff", "MIT mode with velocity feed-forward"),
 };
 
 export const robotModelInfo = (key: string | null | undefined): RobotModelInfo =>

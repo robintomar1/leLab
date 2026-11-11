@@ -36,9 +36,10 @@ SO101 = "so101"
 REBOT_DEFAULT = "rebot_default"
 REBOT_HIGH_POS_GAINS = "rebot_high_pos_gains"
 REBOT_MIT = "rebot_mit"
+REBOT_MIT_FF = "rebot_mit_ff"
 DEFAULT_ROBOT_MODEL = SO101
 
-RobotModelLiteral = Literal["so101", "rebot_default", "rebot_high_pos_gains", "rebot_mit"]
+RobotModelLiteral = Literal["so101", "rebot_default", "rebot_high_pos_gains", "rebot_mit", "rebot_mit_ff"]
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ ROBOT_MODELS: dict[str, RobotModel] = {
             "gripper": "Jaw",
         },
     ),
-    # The same arms, driven three ways. Position-velocity mode closes the gap to
+    # The same arms, driven four ways. Position-velocity mode closes the gap to
     # a target at a bounded speed (the motor profile's `pos_vel_velocity`), which
     # suits sessions started from a button with the follower wherever it was left.
     #
@@ -129,14 +130,24 @@ ROBOT_MODELS: dict[str, RobotModel] = {
     REBOT_HIGH_POS_GAINS: _rebot(
         REBOT_HIGH_POS_GAINS, "high position gains", {"control_mode": "pos_vel"}, HIGH_POSITION_KP
     ),
-    # MIT mode: a spring and damper to the target, with LeRobot's gains. LeLab's
-    # follower also sends the target's velocity, which removes the lag the damper
-    # otherwise adds (lelab/rebot_ff_follower.py). MIT mode has no speed limit of
-    # its own, so the target is kept within `max_relative_target` degrees of the
-    # arm: the spring cannot wind up when a session starts with the follower away
-    # from the leader's pose.
-    REBOT_MIT: _rebot(
-        REBOT_MIT,
+    # MIT mode: a spring and damper to the target, with LeRobot's gains. It has no
+    # speed limit of its own, so the target is kept within `max_relative_target`
+    # degrees of the arm: the spring cannot wind up when a session starts with the
+    # follower away from the leader's pose.
+    #
+    # The damper resists every motion, so the follower trails by about kd / kp
+    # seconds. For imitation learning that is not a defect to tune away: a soft,
+    # well-damped controller turns a policy's action errors into small state
+    # errors, and tighter tracking fits the data better but performs worse in
+    # closed loop (Bronars, Park, Agrawal, "Tune to Learn", arXiv:2604.02523).
+    REBOT_MIT: _rebot(REBOT_MIT, "MIT mode", {"control_mode": "mit", "max_relative_target": 20.0}, None),
+    # The same, with LeLab's follower also sending the target's velocity
+    # (lelab/rebot_ff_follower.py): the lag goes without either gain going up, which
+    # is what teleoperation wants. It is the tight-tracking regime that paper warns
+    # against for learning, and the velocity is differentiated from the targets, so
+    # a policy's jitter reaches the motors through the damping gain.
+    REBOT_MIT_FF: _rebot(
+        REBOT_MIT_FF,
         "MIT mode with velocity feed-forward",
         {"control_mode": "mit", "max_relative_target": 20.0},
         None,

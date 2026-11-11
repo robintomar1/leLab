@@ -27,7 +27,7 @@ from lelab.rebot_ff_follower import (
     RebotB601FeedforwardFollowerConfig,
     TargetVelocityEstimator,
 )
-from lelab.robot_models import REBOT_MIT, get_robot_model, make_follower
+from lelab.robot_models import REBOT_MIT, REBOT_MIT_FF, get_robot_model, make_follower
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll"]
 
@@ -86,8 +86,8 @@ class _Bus:
 
 @pytest.fixture
 def follower(monkeypatch: pytest.MonkeyPatch):
-    """The follower LeLab builds for rebot_mit, on fake motors, with a clock the test advances."""
-    robot = make_follower(get_robot_model(REBOT_MIT), "/dev/ttyACM0", "arm")
+    """The follower LeLab builds for rebot_mit_ff, on fake motors, with a clock the test advances."""
+    robot = make_follower(get_robot_model(REBOT_MIT_FF), "/dev/ttyACM0", "arm")
     assert type(robot) is RebotB601FeedforwardFollower
     bus = _Bus()
     robot.bus = bus
@@ -165,6 +165,15 @@ def test_no_feedforward_past_a_joint_limit(follower) -> None:
     assert velocity_rad_s == pytest.approx(0.0, abs=1e-3)
 
 
+def test_plain_mit_model_is_lerobots_own_follower_with_a_bounded_target() -> None:
+    from lerobot.robots.rebot_b601_follower import RebotB601Follower
+
+    robot = make_follower(get_robot_model(REBOT_MIT), "/dev/ttyACM0", "arm")
+    assert type(robot) is RebotB601Follower
+    assert robot.config.control_mode.value == "mit"
+    assert robot.config.max_relative_target == 20.0
+
+
 def test_zero_feedforward_gain_is_lerobots_driver(follower) -> None:
     robot, send = follower
     robot.config.velocity_feedforward = 0.0
@@ -215,7 +224,7 @@ def test_rollout_runs_through_lelabs_entry_point_and_builds_the_same_follower(
         InferenceRequest(
             follower_port="/dev/ttyACM0",
             follower_config="follower1.json",
-            robot_model=REBOT_MIT,
+            robot_model=REBOT_MIT_FF,
             policy_ref=str(checkpoint),
         )
     )

@@ -28,6 +28,7 @@ from lelab.robot_models import (
     REBOT_DEFAULT,
     REBOT_HIGH_POS_GAINS,
     REBOT_MIT,
+    REBOT_MIT_FF,
     ROBOT_MODELS,
     SO101,
     connect_arms,
@@ -93,10 +94,14 @@ def test_model_names_match_the_lerobot_device_classes(key: str) -> None:
 def test_rebot_variants_differ_only_in_how_the_follower_is_driven() -> None:
     from lelab.rebot_tuning import FACTORY_POSITION_KP, HIGH_POSITION_KP
 
-    default, high, mit = (get_robot_model(k) for k in (REBOT_DEFAULT, REBOT_HIGH_POS_GAINS, REBOT_MIT))
+    default, high, mit, mit_ff = (
+        get_robot_model(k) for k in (REBOT_DEFAULT, REBOT_HIGH_POS_GAINS, REBOT_MIT, REBOT_MIT_FF)
+    )
+    assert mit_ff.follower_options == mit.follower_options  # same controller, plus the feed-forward
+    assert mit_ff.follower_type != mit.follower_type
 
-    # Same hardware: same drivers, calibration files and dataset robot_type.
-    for model in (default, high, mit):
+    # Same hardware: same calibration files and dataset robot_type.
+    for model in (default, high, mit, mit_ff):
         assert (model.family, model.follower_name, model.leader_name) == (
             "rebot_b601",
             "rebot_b601_follower",
