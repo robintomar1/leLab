@@ -1253,19 +1253,48 @@ def _v4l2_camera_name(index: int) -> str | None:
         return None
 
 
+# VIDIOC_QUERYCAP and the capability bit of a node that delivers video frames.
+_VIDIOC_QUERYCAP = 0x80685600
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+_V4L2_CAPABILITY_SIZE = 104
+_V4L2_DEVICE_CAPS_OFFSET = 88
+
+
+def _v4l2_is_capture_device(index: int) -> bool:
+    """Whether /dev/video{index} is a camera's video node (Linux, no deps).
+
+    Asks the driver what the node is instead of opening it for capture, so a
+    camera that is already streaming somewhere else (the browser's live
+    preview) is still reported. `cv2.VideoCapture` fails on such a camera,
+    which made it vanish from the list and took its preview down with it. The
+    query also skips the metadata node every UVC camera has beside its video
+    node.
+    """
+    import fcntl
+    import struct
+
+    try:
+        fd = os.open(f"/dev/video{index}", os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        capability = bytearray(_V4L2_CAPABILITY_SIZE)
+        fcntl.ioctl(fd, _VIDIOC_QUERYCAP, capability)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    (device_caps,) = struct.unpack_from("<I", capability, _V4L2_DEVICE_CAPS_OFFSET)
+    return bool(device_caps & _V4L2_CAP_VIDEO_CAPTURE)
+
+
 def _linux_cameras() -> list[dict[str, Any]]:
     """Enumerate Linux cameras, naming each from sysfs (no extra deps)."""
-    import cv2
-
-    cameras: list[dict[str, Any]] = []
-    for i in range(10):
-        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
-        opened = cap.isOpened()
-        cap.release()
-        if not opened:
-            continue
-        cameras.append({"index": i, "name": _v4l2_camera_name(i) or f"Camera {i}", "available": True})
-    return cameras
+    return [
+        {"index": i, "name": _v4l2_camera_name(i) or f"Camera {i}", "available": True}
+        for i in range(10)
+        if _v4l2_is_capture_device(i)
+    ]
 
 
 @app.get("/available-cameras")

@@ -279,6 +279,63 @@ def test_v4l2_camera_name_returns_none_when_missing() -> None:
     assert server._v4l2_camera_name(999999) is None
 
 
+def _fake_v4l2_node(monkeypatch: pytest.MonkeyPatch, device_caps: dict[int, int]) -> None:
+    """Make /dev/video{i} answer VIDIOC_QUERYCAP with the given device capabilities."""
+    import fcntl
+    import struct
+
+    from lelab import server
+
+    def fake_open(path, flags):
+        index = int(str(path).removeprefix("/dev/video"))
+        if index not in device_caps:
+            raise FileNotFoundError(path)
+        return index
+
+    def fake_ioctl(fd, request, buffer):
+        assert request == server._VIDIOC_QUERYCAP
+        struct.pack_into("<I", buffer, server._V4L2_DEVICE_CAPS_OFFSET, device_caps[fd])
+        return 0
+
+    monkeypatch.setattr(server.os, "open", fake_open)
+    monkeypatch.setattr(server.os, "close", lambda fd: None)
+    monkeypatch.setattr(fcntl, "ioctl", fake_ioctl)
+
+
+def test_linux_cameras_lists_video_nodes_without_opening_them_for_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A camera the browser is previewing cannot be opened by cv2 but must stay listed.
+
+    Each UVC camera also has a metadata node (odd index here) that is not a camera.
+    """
+    pytest.importorskip("fcntl")
+    from lelab import server
+
+    capture, metadata = 0x04200001, 0x04A00000
+    _fake_v4l2_node(monkeypatch, {0: capture, 1: metadata, 2: capture, 3: metadata})
+    monkeypatch.setattr(server, "_v4l2_camera_name", lambda i: f"cam{i}")
+
+    assert server._linux_cameras() == [
+        {"index": 0, "name": "cam0", "available": True},
+        {"index": 2, "name": "cam2", "available": True},
+    ]
+
+
+def test_v4l2_is_capture_device_false_when_query_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    from lelab import server
+
+    def failing_ioctl(fd, request, buffer):
+        raise OSError("not a v4l2 device")
+
+    monkeypatch.setattr(server.os, "open", lambda path, flags: 7)
+    monkeypatch.setattr(server.os, "close", lambda fd: None)
+    monkeypatch.setattr(fcntl, "ioctl", failing_ioctl)
+
+    assert server._v4l2_is_capture_device(0) is False
+
+
 def test_import_model_route_returns_record(client, monkeypatch) -> None:
     from lelab import server
 
