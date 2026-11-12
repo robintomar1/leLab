@@ -1,5 +1,5 @@
-import { expect, test } from "vitest";
-import { CameraConfig, cameraRotation, normalizeCameraConfig, physicalCameraKey, previewDeviceId, rotatedDimensions, rotationForCamera, serializeCameras } from "./cameraConfig";
+import { describe, expect, test } from "vitest";
+import { CameraConfig, cameraRotation, normalizeCameraConfig, physicalCameraKey, previewDeviceId, rotatedDimensions, rotationForCamera, serializeCameras, syncedWithLive } from "./cameraConfig";
 const camera: CameraConfig = { id: "wrist", name: "wrist", device_id: "usb-wrist", camera_index: 1, type: "opencv", width: 640, height: 480, fps: 30 };
 
 test("old profiles default to zero without changing capture dimensions", () => {
@@ -34,4 +34,38 @@ test("a saved camera previews by its device ID, else by cv2 index in another bro
   expect(previewDeviceId(camera, safari)).toBe("sf-wrist");
   expect(previewDeviceId(camera, [])).toBe("usb-wrist");
   expect(previewDeviceId({ ...camera, camera_index: 5 }, safari)).toBe("");
+});
+
+describe("a camera saved with a device path", () => {
+  const head = { ...camera, id: "head", name: "head", device_id: "id-a", camera_index: 2, camera_path: "/dev/head_cam" };
+  // After a replug the two cameras came up in the other order: the index and
+  // the browser device ID now belong to the other camera.
+  const swapped = [
+    { index: 2, deviceId: "id-a", path: "/dev/wrist_cam" },
+    { index: 4, deviceId: "id-b", path: "/dev/head_cam" },
+  ];
+
+  test("is found by its path, not by the index or device ID another camera took", () => {
+    expect(previewDeviceId(head, swapped)).toBe("id-b");
+    expect(syncedWithLive(head, swapped)).toEqual({ ...head, camera_index: 4, device_id: "id-b" });
+  });
+  test("has no match while unplugged, rather than another camera's", () => {
+    expect(previewDeviceId(head, [swapped[0]])).toBe("");
+    expect(syncedWithLive(head, [swapped[0]])).toBe(head);
+  });
+  test("falls back to device ID and index where the backend reports no paths", () => {
+    expect(previewDeviceId(head, [{ index: 2, deviceId: "id-a" }])).toBe("id-a");
+  });
+  test("sends its path to the session", () => {
+    expect(serializeCameras([head]).head).toMatchObject({ camera_index: 2, camera_path: "/dev/head_cam" });
+  });
+  test("keeps its rotation across the swap", () => {
+    expect(rotationForCamera(swapped[1], [{ ...head, rotation: 90 }], {})).toBe(90);
+  });
+});
+
+test("a camera saved before device paths existed picks up the path of its live match", () => {
+  const live = [{ index: 1, deviceId: "usb-wrist", path: "/dev/wrist_cam" }];
+  expect(syncedWithLive(camera, live)).toEqual({ ...camera, camera_path: "/dev/wrist_cam" });
+  expect(syncedWithLive(camera, [{ index: 1, deviceId: "usb-wrist" }])).toBe(camera);
 });

@@ -28,6 +28,7 @@ import {
   cameraRotationError,
   previewDeviceId,
   rotatedDimensions,
+  syncedWithLive,
 } from "@/lib/cameraConfig";
 export type { CameraConfig } from "@/lib/cameraConfig";
 
@@ -78,23 +79,18 @@ const CameraConfiguration: React.FC<CameraConfigurationProps> = ({
   const [selectedCameraIndex, setSelectedCameraIndex] = useState<string>("");
   const [cameraName, setCameraName] = useState("");
 
-  // cv2's AVFoundation order is uniqueID-sorted, so plugging/unplugging a
-  // device between sessions shifts indices. The browser device_id stays
-  // stable per-origin, so use it to refresh each seeded camera's
-  // camera_index — otherwise the recorder opens the wrong physical device
-  // and the dropdown's "already added" check guards a stale index.
+  // A camera's cv2 index is the order the cameras were plugged in, so it
+  // shifts between sessions (and cv2's AVFoundation order is uniqueID-sorted).
+  // Re-point each seeded camera at the live one it matches — otherwise the
+  // recorder opens the wrong physical device and the dropdown's "already
+  // added" check guards a stale index. A camera saved before device paths
+  // existed gets its path here.
   useEffect(() => {
     if (availableCameras.length === 0 || cameras.length === 0) return;
-    let changed = false;
-    const refreshed = cameras.map((cam) => {
-      if (!cam.device_id) return cam;
-      const match = availableCameras.find((m) => m.deviceId === cam.device_id);
-      if (match && match.index !== cam.camera_index) {
-        changed = true;
-        return { ...cam, camera_index: match.index };
-      }
-      return cam;
-    });
+    const refreshed = cameras.map((cam) =>
+      cam.device_id || cam.camera_path ? syncedWithLive(cam, availableCameras) : cam,
+    );
+    const changed = refreshed.some((cam, i) => cam !== cameras[i]);
     if (changed) onCamerasChange(refreshed);
     // We deliberately don't depend on `cameras`/`onCamerasChange` to avoid
     // re-running every keystroke in the camera-name input — re-syncing only
@@ -149,6 +145,7 @@ const CameraConfiguration: React.FC<CameraConfigurationProps> = ({
       type: "opencv",
       camera_index: selectedCamera.index,
       device_id: selectedCamera.deviceId,
+      ...(selectedCamera.path ? { camera_path: selectedCamera.path } : {}),
       width: 640,
       height: 480,
       fps: 30,

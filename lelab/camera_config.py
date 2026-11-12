@@ -14,6 +14,8 @@
 
 """Translate native capture settings into LeRobot camera settings."""
 
+import os
+from pathlib import Path
 from typing import Any
 
 
@@ -46,3 +48,20 @@ def lerobot_camera_settings(config: dict[str, Any]) -> dict[str, Any]:
     if "rotation" in config:
         settings["rotation"] = -90 if rotation == 270 else rotation
     return settings
+
+
+def camera_source(name: str, config: dict[str, Any]) -> int | Path:
+    """What to open for a camera: its device path when it has one, else its index.
+
+    An index is whatever order the cameras were plugged in, so it moves when
+    they are replugged. `camera_path` is a name that follows the camera
+    (a udev link such as /dev/v4l/by-path/...). A camera saved with a path
+    that is not there is unplugged: falling back to its index would open some
+    other camera and record it under this one's name, so that is an error.
+    """
+    path = config.get("camera_path")
+    if not path:
+        return config.get("camera_index", 0)
+    if not os.path.exists(path):
+        raise ValueError(f"Camera '{name}' is not connected: {path} does not exist.")
+    return Path(path)

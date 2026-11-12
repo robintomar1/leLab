@@ -91,10 +91,12 @@ export function useCameraBindings(
       const idx = bindings[name];
       if (idx == null) continue;
       const rotation = rotationFor(name);
+      const path = physicalFor(idx).path;
       const capture = rotatedDimensions(dims.width, dims.height, rotation);
       cameraDict[name] = serializeCamera({
         type: "opencv",
         camera_index: idx,
+        ...(path ? { camera_path: path } : {}),
         width: capture.width,
         height: capture.height,
         rotation,

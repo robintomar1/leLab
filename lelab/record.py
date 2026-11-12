@@ -28,7 +28,7 @@ from lerobot.datasets import LeRobotDataset
 # Import the main record functionality to reuse it
 from lerobot.scripts.lerobot_record import RecordConfig
 
-from .camera_config import lerobot_camera_settings, validate_camera_rotations
+from .camera_config import camera_source, lerobot_camera_settings, validate_camera_rotations
 from .episode_media import UnreadableDatasetError, ensure_episode_index
 from .robot_models import (
     DEFAULT_ROBOT_MODEL,
@@ -162,9 +162,10 @@ def _build_camera_configs(cameras: dict, default_backend) -> dict:
         backend = Cv2Backends[backend_name] if backend_name else default_backend
         fourcc = camera_data.get("fourcc") or None
         settings = lerobot_camera_settings(camera_data)
+        source = camera_source(camera_name, camera_data)
 
         camera_configs[camera_name] = OpenCVCameraConfig(
-            index_or_path=camera_data.get("camera_index", 0),
+            index_or_path=source,
             backend=backend,
             fps=camera_data.get("fps"),
             width=settings.get("width"),
@@ -174,7 +175,7 @@ def _build_camera_configs(cameras: dict, default_backend) -> dict:
         )
         logger.info(
             f"✅ CAMERA CONFIG: {camera_name} -> OpenCVCameraConfig("
-            f"index={camera_data.get('camera_index')}, backend={backend.name}, "
+            f"source={source}, backend={backend.name}, "
             f"{camera_data.get('width')}x{camera_data.get('height')}@{camera_data.get('fps')}fps, "
             f"fourcc={fourcc}, rotation={camera_data.get('rotation', 0)})"
         )

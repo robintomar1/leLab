@@ -1288,13 +1288,43 @@ def _v4l2_is_capture_device(index: int) -> bool:
     return bool(device_caps & _V4L2_CAP_VIDEO_CAPTURE)
 
 
+def _v4l2_stable_paths() -> dict[int, str]:
+    """For each /dev/video{index}, a device path that follows the camera.
+
+    A video index is the order the cameras were plugged in. udev also links
+    each node under a name that survives replugging: a link of the user's own
+    rule in /dev (e.g. /dev/wrist_cam) if there is one, else the one in
+    /dev/v4l/by-path, which names the USB port. by-id is left out: two cameras
+    of one model without serial numbers get the same name there.
+    """
+    paths: dict[int, str] = {}
+    for directory in ("/dev", "/dev/v4l/by-path"):
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_symlink():
+                continue
+            target = os.path.realpath(entry.path)
+            number = target.removeprefix("/dev/video")
+            if target.startswith("/dev/video") and number.isdigit():
+                paths.setdefault(int(number), entry.path)
+    return paths
+
+
 def _linux_cameras() -> list[dict[str, Any]]:
     """Enumerate Linux cameras, naming each from sysfs (no extra deps)."""
-    return [
-        {"index": i, "name": _v4l2_camera_name(i) or f"Camera {i}", "available": True}
-        for i in range(10)
-        if _v4l2_is_capture_device(i)
-    ]
+    paths = _v4l2_stable_paths()
+    cameras = []
+    for i in range(10):
+        if not _v4l2_is_capture_device(i):
+            continue
+        camera = {"index": i, "name": _v4l2_camera_name(i) or f"Camera {i}", "available": True}
+        if i in paths:
+            camera["path"] = paths[i]
+        cameras.append(camera)
+    return cameras
 
 
 @app.get("/available-cameras")

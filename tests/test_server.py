@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -315,11 +316,38 @@ def test_linux_cameras_lists_video_nodes_without_opening_them_for_capture(
     capture, metadata = 0x04200001, 0x04A00000
     _fake_v4l2_node(monkeypatch, {0: capture, 1: metadata, 2: capture, 3: metadata})
     monkeypatch.setattr(server, "_v4l2_camera_name", lambda i: f"cam{i}")
+    monkeypatch.setattr(server, "_v4l2_stable_paths", lambda: {2: "/dev/wrist_cam"})
 
     assert server._linux_cameras() == [
         {"index": 0, "name": "cam0", "available": True},
-        {"index": 2, "name": "cam2", "available": True},
+        {"index": 2, "name": "cam2", "available": True, "path": "/dev/wrist_cam"},
     ]
+
+
+def test_v4l2_stable_paths_prefer_a_udev_rule_link_over_by_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from lelab import server
+
+    dev = tmp_path / "dev"
+    by_path = dev / "v4l" / "by-path"
+    by_path.mkdir(parents=True)
+    (dev / "video2").touch()
+    (dev / "video4").touch()
+    (dev / "wrist_cam").symlink_to(dev / "video4")
+    (by_path / "usb-0:1-video-index0").symlink_to(dev / "video2")
+    (by_path / "usb-0:2-video-index0").symlink_to(dev / "video4")
+
+    real_scandir, real_realpath = os.scandir, os.path.realpath
+    remap = lambda path: str(path).replace("/dev", str(dev), 1)  # noqa: E731
+    monkeypatch.setattr(server.os, "scandir", lambda directory: real_scandir(remap(directory)))
+    monkeypatch.setattr(
+        server.os.path, "realpath", lambda path: real_realpath(path).replace(str(dev), "/dev", 1)
+    )
+
+    paths = server._v4l2_stable_paths()
+    assert paths[4].endswith("/dev/wrist_cam")
+    assert paths[2].endswith("/dev/v4l/by-path/usb-0:1-video-index0")
 
 
 def test_v4l2_is_capture_device_false_when_query_fails(monkeypatch: pytest.MonkeyPatch) -> None:

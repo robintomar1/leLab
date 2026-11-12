@@ -39,7 +39,7 @@ from pydantic import BaseModel, field_validator
 
 from lerobot.utils.device_utils import auto_select_torch_device
 
-from .camera_config import lerobot_camera_settings, validate_camera_rotations
+from .camera_config import camera_source, lerobot_camera_settings, validate_camera_rotations
 from .robot_models import (
     DEFAULT_ROBOT_MODEL,
     RobotModelLiteral,
@@ -199,14 +199,15 @@ def _rollout_inference_args(policy_path: str) -> list[str]:
 
 def _format_cameras_arg(cameras: dict[str, dict[str, Any]]) -> str:
     """Convert native camera settings into
-    lerobot's CLI dict syntax. The frontend key `camera_index` is
-    remapped to lerobot's `index_or_path`."""
+    lerobot's CLI dict syntax. The frontend keys `camera_index` and
+    `camera_path` become lerobot's `index_or_path`."""
     parts = []
     for name, cfg in cameras.items():
         settings = lerobot_camera_settings(cfg)
-        remapped = {
-            ("index_or_path" if k == "camera_index" else k): v for k, v in settings.items() if v is not None
-        }
+        settings.pop("camera_index", None)
+        settings.pop("camera_path", None)
+        remapped = {"index_or_path": camera_source(name, cfg)}
+        remapped.update((k, v) for k, v in settings.items() if v is not None)
         body = ", ".join(f"{k}: {v}" for k, v in remapped.items())
         parts.append(f"{name}: {{{body}}}")
     return "{" + ", ".join(parts) + "}"

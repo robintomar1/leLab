@@ -59,7 +59,7 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 
 - `calibration/teleoperators/<leader name>/*.json` — leader calibration files (also called "teleop"): `so_leader`, `rebot_102_leader`
 - `calibration/robots/<follower name>/*.json` — follower calibration files (also called "robot"): `so_follower`, `rebot_b601_follower`
-- `robots/<name>.json` — robot records: `robot_model`, ports, linked calibration files, cameras. Changing a record's model unlinks its calibration files.
+- `robots/<name>.json` — robot records: `robot_model`, ports, linked calibration files, cameras. Changing a record's model unlinks its calibration files. A camera carries `camera_index` and, on Linux, `camera_path`: a udev link that follows the camera across replugs (`/available-cameras` reports one per camera). Where a path is saved it decides which camera is opened and previewed ([lelab/camera_config.py](lelab/camera_config.py) `camera_source`, [frontend/src/lib/cameraConfig.ts](frontend/src/lib/cameraConfig.ts) `liveCameraFor`); a saved path that is missing is an error, not a fallback to the index.
 - `ports/{leader,follower}_port.txt` — last-used serial ports
 - `saved_configs/{leader,follower}_config.txt` — last-selected config name
 

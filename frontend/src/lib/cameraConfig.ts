@@ -7,6 +7,8 @@ export type CameraRotation = (typeof CAMERA_ROTATIONS)[number];
 export interface CameraRequest {
   type: string;
   camera_index?: number;
+  /** Device path that follows the camera across replugs (Linux); wins over the index. */
+  camera_path?: string;
   width: number;
   height: number;
   fps?: number;
@@ -60,6 +62,7 @@ export function serializeCamera(camera: CameraRequest): CameraRequest {
   return {
     type: camera.type,
     camera_index: camera.camera_index,
+    ...(camera.camera_path ? { camera_path: camera.camera_path } : {}),
     width: camera.width,
     height: camera.height,
     fps: camera.fps,
@@ -101,17 +104,26 @@ export function cameraPreviewGeometry(width: number, height: number, rotation: C
 export interface PhysicalCamera {
   index: number;
   deviceId: string;
+  /** Device path that follows the camera across replugs, where the backend knows one. */
+  path?: string;
 }
 
 /**
- * The live camera for a saved one. Browser device IDs differ per browser and
- * origin, so an ID saved in Firefox is unknown to Safari (or to the Vite dev
- * origin); fall back to the cv2 index, which every browser shares.
+ * The live camera for a saved one. A saved device path identifies the camera
+ * itself, so where the backend reports paths it is the only match: the index
+ * and the browser device ID both follow the order cameras were plugged in, and
+ * would pick whichever camera took this one's place. Otherwise match by browser
+ * device ID, which differs per browser and origin (an ID saved in Firefox is
+ * unknown to Safari, or to the Vite dev origin), then by the cv2 index, which
+ * every browser shares.
  */
 export function liveCameraFor<T extends PhysicalCamera>(
-  saved: Pick<CameraConfig, "device_id" | "camera_index">,
+  saved: Pick<CameraConfig, "device_id" | "camera_index" | "camera_path">,
   available: T[],
 ): T | undefined {
+  if (saved.camera_path && available.some((c) => c.path)) {
+    return available.find((c) => c.path === saved.camera_path);
+  }
   return (
     (saved.device_id ? available.find((c) => c.deviceId === saved.device_id) : undefined) ??
     available.find((c) => c.index === saved.camera_index)
@@ -119,11 +131,31 @@ export function liveCameraFor<T extends PhysicalCamera>(
 }
 
 /**
+ * A saved camera brought up to date with the live one it matches: its current
+ * index and browser device ID, and its device path if it had none yet.
+ */
+export function syncedWithLive<T extends CameraConfig>(saved: T, available: PhysicalCamera[]): T {
+  const live = liveCameraFor(saved, available);
+  if (!live) return saved;
+  const next = {
+    ...saved,
+    camera_index: live.index,
+    device_id: live.deviceId || saved.device_id,
+    ...(live.path ? { camera_path: live.path } : {}),
+  };
+  const unchanged =
+    next.camera_index === saved.camera_index &&
+    next.device_id === saved.device_id &&
+    next.camera_path === saved.camera_path;
+  return unchanged ? saved : next;
+}
+
+/**
  * Browser device ID to preview a saved camera with. Until the live cameras
  * have been listed, try the saved ID; afterwards "" means no camera matched.
  */
 export function previewDeviceId(
-  saved: Pick<CameraConfig, "device_id" | "camera_index">,
+  saved: Pick<CameraConfig, "device_id" | "camera_index" | "camera_path">,
   available: PhysicalCamera[],
 ): string {
   if (available.length === 0) return saved.device_id;
@@ -140,7 +172,8 @@ export function rotationForCamera(
   configured: CameraConfig[],
   overrides: Record<string, CameraRotation>,
 ): CameraRotation {
-  const saved = configured.find((item) => camera.deviceId && item.device_id === camera.deviceId)
+  const saved = configured.find((item) => camera.path && item.camera_path === camera.path)
+    ?? configured.find((item) => camera.deviceId && item.device_id === camera.deviceId)
     ?? configured.find((item) => item.camera_index === camera.index);
   return cameraRotation(overrides[physicalCameraKey(camera)] ?? saved?.rotation);
 }

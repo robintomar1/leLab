@@ -6,6 +6,8 @@ export interface AvailableCamera {
   name: string;
   deviceId: string;
   available: boolean;
+  /** Device path that follows the camera across replugs (Linux only). */
+  path?: string;
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -53,6 +55,7 @@ export function useAvailableCameras({
         index: number;
         name?: string;
         available: boolean;
+        path?: string;
       }[] = data.cameras ?? [];
 
       // Browser's MediaDeviceInfo.label starts with AVFoundation's localizedName
@@ -77,6 +80,7 @@ export function useAvailableCameras({
           name: label,
           deviceId: match?.deviceId ?? "",
           available: cam.available,
+          ...(cam.path ? { path: cam.path } : {}),
         };
       });
       setCameras(merged);

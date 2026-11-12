@@ -150,3 +150,48 @@ def test_api_rejects_invalid_rotation_before_handler(
     handler.assert_not_called()
     assert record.recording_active == recording_active
     assert rollout.inference_active == inference_active
+
+
+def test_camera_source_prefers_an_existing_path(tmp_path) -> None:
+    from lelab.camera_config import camera_source
+
+    device = tmp_path / "head_cam"
+    device.touch()
+    assert camera_source("head", {"camera_index": 2, "camera_path": str(device)}) == device
+
+
+def test_camera_source_is_the_index_without_a_path() -> None:
+    from lelab.camera_config import camera_source
+
+    assert camera_source("head", {"camera_index": 2}) == 2
+    assert camera_source("head", {"camera_index": 2, "camera_path": ""}) == 2
+
+
+def test_camera_source_refuses_an_unplugged_camera(tmp_path) -> None:
+    """Falling back to the index would record another camera under this name."""
+    import pytest
+
+    from lelab.camera_config import camera_source
+
+    with pytest.raises(ValueError, match="'head' is not connected"):
+        camera_source("head", {"camera_index": 2, "camera_path": str(tmp_path / "gone")})
+
+
+def test_rollout_cameras_arg_names_the_path_and_drops_the_api_keys(tmp_path) -> None:
+    from lelab.rollout import _format_cameras_arg
+
+    device = tmp_path / "head_cam"
+    device.touch()
+    arg = _format_cameras_arg(
+        {
+            "head": {
+                "type": "opencv",
+                "camera_index": 2,
+                "camera_path": str(device),
+                "width": 640,
+                "height": 480,
+            }
+        }
+    )
+    assert f"index_or_path: {device}" in arg
+    assert "camera_path" not in arg and "camera_index" not in arg
