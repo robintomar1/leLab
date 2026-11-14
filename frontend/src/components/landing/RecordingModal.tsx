@@ -25,6 +25,7 @@ import CameraConfiguration, {
 import { useHfAuth } from "@/contexts/HfAuthContext";
 import { RobotRecord } from "@/hooks/useRobots";
 import { AppendTarget } from "@/hooks/useRecording";
+import { MAX_RECORDING_FPS, MIN_RECORDING_FPS, recordingFpsInRange } from "@/lib/recordingRate";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
 import CameraBindings from "./CameraBindings";
 
@@ -44,6 +45,9 @@ interface RecordingModalProps {
   setEpisodeTimeS: (value: number) => void;
   resetTimeS: number;
   setResetTimeS: (value: number) => void;
+  /** Frames per second of the dataset; fixed when appending. */
+  fps: number;
+  setFps: (value: number) => void;
   streamingEncoding: boolean;
   setStreamingEncoding: (value: boolean) => void;
   cameras: CameraConfig[];
@@ -68,6 +72,8 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
   setEpisodeTimeS,
   resetTimeS,
   setResetTimeS,
+  fps,
+  setFps,
   streamingEncoding,
   setStreamingEncoding,
   cameras,
@@ -77,8 +83,14 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
 }) => {
   const { auth } = useHfAuth();
 
+  const fpsInRange = recordingFpsInRange(fps);
   const canStart =
-    !!robot && robot.is_clean && (!appendTo || cameraBindings.allBound);
+    !!robot && robot.is_clean && fpsInRange && (!appendTo || cameraBindings.allBound);
+  // The slowest camera that will be recorded: above its rate, images repeat.
+  const cameraRates = cameras
+    .map((camera) => camera.fps)
+    .filter((rate): rate is number => typeof rate === "number" && rate > 0);
+  const slowestCameraFps = cameraRates.length > 0 ? Math.min(...cameraRates) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -249,6 +261,49 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
                       className="bg-gray-800 border-gray-700 text-white"
                     />
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="recordingFps"
+                    className="text-sm font-medium text-gray-300"
+                  >
+                    Recording rate (frames per second)
+                  </Label>
+                  <NumberInput
+                    id="recordingFps"
+                    min={String(MIN_RECORDING_FPS)}
+                    max={String(MAX_RECORDING_FPS)}
+                    value={fps}
+                    disabled={!!appendTo}
+                    onChange={(v) => {
+                      if (v !== undefined) setFps(v);
+                    }}
+                    className="bg-gray-800 border-gray-700 text-white"
+                  />
+                  {appendTo ? (
+                    <p className="text-xs text-gray-500">
+                      Fixed by the dataset: episodes can only be added at the rate it was
+                      recorded at.
+                    </p>
+                  ) : !fpsInRange ? (
+                    <p role="alert" className="text-xs text-red-400">
+                      Enter a rate from {MIN_RECORDING_FPS} to {MAX_RECORDING_FPS}.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500">
+                      How often joint positions and actions are written. It cannot be changed
+                      after the first episode.
+                      {slowestCameraFps !== null && fps > slowestCameraFps && (
+                        <>
+                          {" "}
+                          <span className="text-amber-400">
+                            A camera here delivers {slowestCameraFps} fps, so its images repeat
+                            between new frames; only the joint data gains from the higher rate.
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

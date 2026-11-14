@@ -6,6 +6,7 @@ import { RobotRecord } from "@/hooks/useRobots";
 import { CameraConfig, cameraConfigurationError, serializeCameras } from "@/lib/cameraConfig";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
 import { ImageFeatures } from "@/lib/checkpointsApi";
+import { DEFAULT_RECORDING_FPS } from "@/lib/recordingRate";
 
 /** An existing local dataset that new episodes get appended to. */
 export interface AppendTarget {
@@ -32,6 +33,8 @@ export const useRecording = (robot: RobotRecord | null) => {
   const [numEpisodes, setNumEpisodes] = useState(5);
   const [episodeTimeS, setEpisodeTimeS] = useState(60);
   const [resetTimeS, setResetTimeS] = useState(15);
+  // Frames per second of a new dataset. An appended one keeps its own rate.
+  const [fps, setFps] = useState(DEFAULT_RECORDING_FPS);
   const [streamingEncoding, setStreamingEncoding] = useState(true);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
 
@@ -59,7 +62,9 @@ export const useRecording = (robot: RobotRecord | null) => {
   };
 
   // A bound camera keeps the capture settings the robot gives that device, as
-  // in a new recording.
+  // in a new recording. That includes its frame rate: the dataset's rate is how
+  // often frames are written, and a camera asked for a rate it cannot deliver
+  // refuses to open.
   const captureSettings = (index: number | undefined) => {
     const robotCams = robot?.cameras ?? [];
     const deviceId = cameraBindings.availableCameras.find((c) => c.index === index)?.deviceId;
@@ -67,6 +72,7 @@ export const useRecording = (robot: RobotRecord | null) => {
       (deviceId && robotCams.find((c) => c.device_id === deviceId)) ||
       robotCams.find((c) => c.camera_index === index);
     return {
+      ...(cam?.fps ? { fps: cam.fps } : {}),
       ...(cam?.fourcc ? { fourcc: cam.fourcc } : {}),
       ...(cam?.backend ? { backend: cam.backend } : {}),
     };
@@ -140,7 +146,7 @@ export const useRecording = (robot: RobotRecord | null) => {
       episode_time_s: episodeTimeS,
       reset_time_s: resetTimeS,
       // LeRobot refuses to append frames at a different rate than the dataset's.
-      fps: appendTo ? appendTo.fps : 30,
+      fps: appendTo ? appendTo.fps : fps,
       video: true,
       push_to_hub: false,
       resume: appendTo !== null,
@@ -171,6 +177,8 @@ export const useRecording = (robot: RobotRecord | null) => {
       setEpisodeTimeS,
       resetTimeS,
       setResetTimeS,
+      fps: appendTo ? appendTo.fps : fps,
+      setFps,
       streamingEncoding,
       setStreamingEncoding,
       cameras,

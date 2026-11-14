@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import RecordingRate from "@/components/recording/RecordingRate";
+import { LoopRate } from "@/lib/recordingRate";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,6 +75,8 @@ interface BackendStatus {
   session_ended?: boolean;
   dataset_repo_id?: string;
   error?: string;
+  target_fps?: number;
+  loop_rate?: LoopRate;
   cameras?: string[]; // Names of the cameras configured for this session
   available_controls: {
     stop_recording: boolean;
@@ -731,6 +735,10 @@ const Recording = () => {
               <span className="text-xl font-semibold leading-none text-gray-500">/ {totalEpisodes}</span>
             </div>
             <div className="flex items-center gap-4 text-gray-400">
+              <RecordingRate
+                targetFps={backendStatus.target_fps ?? recordingConfig.fps}
+                loopRate={backendStatus.loop_rate}
+              />
               <div
                 className="flex items-baseline gap-2"
                 aria-label={`Total session time ${formatTime(sessionElapsedTime)}`}

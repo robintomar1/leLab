@@ -467,3 +467,97 @@ def test_handle_delete_dataset_hub_failure_keeps_local_copy(
 
     assert result["success"] is False
     assert dataset_dir.exists()
+
+
+@pytest.mark.parametrize("fps", [1, 30, 60, 100, 240])
+def test_recording_request_accepts_a_range_of_rates(fps: int) -> None:
+    from lelab.record import RecordingRequest
+
+    request = RecordingRequest(
+        leader_port="a", follower_port="b", leader_config="l", follower_config="f",
+        dataset_repo_id="d", single_task="t", fps=fps,
+    )  # fmt: skip
+    assert request.fps == fps
+
+
+@pytest.mark.parametrize("fps", [0, -30, 241, 3000])
+def test_recording_request_rejects_rates_out_of_range(fps: int) -> None:
+    from pydantic import ValidationError
+
+    from lelab.record import RecordingRequest
+
+    with pytest.raises(ValidationError):
+        RecordingRequest(
+            leader_port="a", follower_port="b", leader_config="l", follower_config="f",
+            dataset_repo_id="d", single_task="t", fps=fps,
+        )  # fmt: skip
+
+
+def _timed_take(fps: float, tick_work_s: float, ticks: int):
+    """Run LeRobot's cycle timer over a loop whose body takes `tick_work_s`."""
+    import time
+
+    from lerobot.utils.cycle_timer import CycleTimer
+
+    timer = CycleTimer(fps)
+    for _ in range(ticks):
+        timer.tick()
+        time.sleep(tick_work_s)
+        timer.wait()
+    return timer.snapshot()
+
+
+def test_loop_rate_report_says_a_take_kept_its_rate() -> None:
+    from lelab.record import loop_rate_report
+
+    report = loop_rate_report(_timed_take(50, 0.001, 30), target_fps=50, episode=3)
+
+    assert report is not None
+    assert report["episode"] == 3 and report["target_fps"] == 50
+    assert report["achieved_hz"] == pytest.approx(50, rel=0.05)
+    assert report["kept_up"] is True
+
+
+def test_loop_rate_report_flags_a_take_that_could_not_keep_up() -> None:
+    """A 10 ms loop body cannot run at 200 Hz: the dataset would claim a rate it never had."""
+    from lelab.record import loop_rate_report
+
+    report = loop_rate_report(_timed_take(200, 0.010, 30), target_fps=200, episode=1)
+
+    assert report is not None
+    assert report["achieved_hz"] < 110
+    assert report["mean_work_ms"] >= 10
+    assert report["kept_up"] is False
+    assert report["slow_ticks_percent"] > 90
+
+
+def test_loop_rate_report_is_none_without_ticks() -> None:
+    from lelab.record import loop_rate_report
+    from lerobot.utils.cycle_timer import CycleTimer
+
+    assert loop_rate_report(CycleTimer(30).snapshot(), target_fps=30, episode=1) is None
+
+
+def test_recording_status_reports_the_target_and_achieved_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lelab import record
+    from lelab.record import RecordingRequest
+
+    request = RecordingRequest(
+        leader_port="a", follower_port="b", leader_config="l", follower_config="f",
+        dataset_repo_id="d", single_task="t", fps=60,
+    )  # fmt: skip
+    rate = {
+        "episode": 1,
+        "target_fps": 60,
+        "achieved_hz": 59.8,
+        "slow_ticks_percent": 0.4,
+        "mean_work_ms": 11.0,
+        "kept_up": True,
+    }
+    monkeypatch.setattr(record, "recording_config", request)
+    monkeypatch.setattr(record, "last_loop_rate", rate)
+
+    status = record.handle_recording_status()
+
+    assert status["target_fps"] == 60
+    assert status["loop_rate"] == rate

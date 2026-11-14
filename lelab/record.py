@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from lerobot.configs.dataset import DatasetRecordConfig
 from lerobot.datasets import LeRobotDataset
@@ -46,6 +46,17 @@ logger = logging.getLogger(__name__)
 
 LOCAL_DATASET_NAMESPACE = "local"
 
+# Dataset rates the recorder accepts. The upper end is far above what a serial
+# arm's control loop reaches; whether a rate was actually held is reported per
+# episode (`loop_rate_report`), not assumed.
+MIN_RECORDING_FPS = 1
+MAX_RECORDING_FPS = 240
+# A take whose achieved rate is below this share of the target did not keep up.
+# LeRobot's pacing itself runs 1-2% under the target on a loop with time to
+# spare (measured: 29.8 Hz at 30, 59.2 at 60, 98.0 at 100), so the line is
+# drawn below that.
+LOOP_RATE_TOLERANCE = 0.95
+
 # Global variables for recording state
 recording_active = False
 recording_thread: threading.Thread | None = None
@@ -60,6 +71,8 @@ session_end_elapsed_seconds = None  # Final session duration after the run ends
 current_episode = 1  # Track current episode number
 saved_episodes = 0  # Track how many episodes have been saved
 current_phase = "preparing"  # Track current phase: "preparing", "recording", "resetting", "completed"
+# The rate the last recorded take actually ran at (see `loop_rate_report`).
+last_loop_rate: dict[str, Any] | None = None
 phase_start_time = None  # Track when current phase started
 last_recording_info: dict[str, Any] | None = (
     None  # Snapshot of the most recently completed dataset (for /dataset-info)
@@ -77,7 +90,10 @@ class RecordingRequest(BaseModel):
     num_episodes: int = 5
     episode_time_s: int = 30
     reset_time_s: int = 10
-    fps: int = 30
+    # Frames per second of the dataset: how often joint states and actions are
+    # written. Cameras keep their own rate; a camera slower than this repeats
+    # its last image.
+    fps: int = Field(default=30, ge=MIN_RECORDING_FPS, le=MAX_RECORDING_FPS)
     video: bool = True
     push_to_hub: bool = False
     tags: list[str] = []
@@ -246,7 +262,8 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
         saved_episodes, \
         current_phase, \
         phase_start_time, \
-        last_recording_info
+        last_recording_info, \
+        last_loop_rate
 
     from . import replay as _replay, rollout as _rollout, teleoperate as _teleoperate
 
@@ -272,6 +289,7 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
         current_phase = "preparing"
         phase_start_time = None
         last_recording_info = None
+        last_loop_rate = None
 
     try:
         # Sanitize the dataset name so push_to_hub never rejects a finished
@@ -465,6 +483,32 @@ def handle_rerecord_episode() -> dict[str, Any]:
     }
 
 
+def loop_rate_report(stats: Any, target_fps: float, episode: int) -> dict[str, Any] | None:
+    """The rate an episode was actually recorded at, from LeRobot's cycle timer.
+
+    LeRobot stamps frame N at N / fps whatever the clock said. A loop that
+    cannot keep up therefore still produces a dataset that claims the target
+    rate, with the motion compressed in time. `kept_up` is false when the
+    achieved rate falls short of the target by more than `LOOP_RATE_TOLERANCE`
+    allows.
+    """
+    if stats.span_ticks == 0 or stats.span <= 0:
+        return None
+    achieved = stats.span_ticks / stats.span
+    slow = stats.groups_over / stats.groups_judged if stats.groups_judged else 0.0
+    return {
+        "episode": episode,
+        "target_fps": target_fps,
+        "achieved_hz": round(achieved, 1),
+        "slow_ticks_percent": round(100.0 * slow, 1),
+        # What one pass of the loop costs (reading both arms, the cameras'
+        # latest frames, writing the frame), pacing sleep excluded: the rate
+        # this setup can hold is below 1000 / this.
+        "mean_work_ms": round(1000.0 * stats.work / stats.ticks, 1) if stats.ticks else None,
+        "kept_up": achieved >= LOOP_RATE_TOLERANCE * target_fps,
+    }
+
+
 def handle_recording_status() -> dict[str, Any]:
     """Handle recording status request"""
     # If recording is not active and phase is completed or error, indicate session has ended
@@ -504,6 +548,9 @@ def handle_recording_status() -> dict[str, Any]:
     # can read the actual on-disk repo_id (post stamp) for upload navigation.
     if recording_config:
         status["dataset_repo_id"] = recording_config.dataset_repo_id
+        status["target_fps"] = recording_config.fps
+        if last_loop_rate is not None:
+            status["loop_rate"] = last_loop_rate
 
     # Carry the failure reason and how much of the session survived it, so the
     # frontend can offer a partial dataset for upload and only send the user
@@ -790,10 +837,11 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict, model: RobotMode
     from lerobot.robots import make_robot_from_config
     from lerobot.scripts.lerobot_record import record_loop
     from lerobot.teleoperators import make_teleoperator_from_config
+    from lerobot.utils.cycle_timer import CycleTimer
     from lerobot.utils.feature_utils import hw_to_dataset_features
     from lerobot.utils.utils import log_say
 
-    global current_phase, phase_start_time, current_episode, saved_episodes, current_robot
+    global current_phase, phase_start_time, current_episode, saved_episodes, current_robot, last_loop_rate
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
@@ -924,7 +972,29 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict, model: RobotMode
             web_events["_exit_early_triggered"] = False
             logger.info(f"Recording phase - calling record_loop with events: {web_events}")
 
-            record_loop(**loop_kwargs, dataset=dataset, control_time_s=cfg.dataset.episode_time_s)
+            # A timer per take, so the achieved rate describes this episode alone.
+            take_timer = CycleTimer(cfg.dataset.fps)
+            record_loop(
+                **loop_kwargs, dataset=dataset, control_time_s=cfg.dataset.episode_time_s, timer=take_timer
+            )
+            last_loop_rate = loop_rate_report(take_timer.snapshot(), cfg.dataset.fps, current_episode)
+            if last_loop_rate is not None:
+                report = (
+                    f"Episode {current_episode} ran at {last_loop_rate['achieved_hz']} Hz "
+                    f"(target {cfg.dataset.fps} Hz); the loop body averaged "
+                    f"{last_loop_rate['mean_work_ms']} ms and {last_loop_rate['slow_ticks_percent']}% of "
+                    "ticks took longer than their slot."
+                )
+                # LeRobot's own digest, with the time spent in each step of the loop.
+                take_timer.log_run_summary()
+                if last_loop_rate["kept_up"]:
+                    logger.info(report)
+                else:
+                    logger.warning(
+                        report + " The loop could not hold the rate: frames are stamped "
+                        f"1/{cfg.dataset.fps} s apart regardless, so this take plays back faster than "
+                        "it happened. Record at a lower rate."
+                    )
 
             logger.info(f"Recording phase completed - events state: {web_events}")
 
